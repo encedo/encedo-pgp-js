@@ -33,9 +33,30 @@ test/
 - **ES modules** (`"type": "module"`) — all files use `import/export`
 - **DESCR schema**: keys in HSM tagged as `PGP:role=self:email=<email>:type=sign|ecdh`
 - **cert-builder.js** implements RFC 4880 packet encoding from scratch (no external PGP lib for key building) — allows precise control over what the HSM signs
-- **Ed25519ph** signing variant used in cert signatures (pre-hashed: HSM receives SHA-256 digest, not raw data) — avoids large data transfer to/from HSM
+- **Ed25519 (not Ed25519ph)** used for cert signatures — HSM receives SHA-256 digest of the signing data; GPG verifies with standard Ed25519
 - **RFC 6637 §8 KDF** implemented locally (SHA-256 + AES-256 KW) — ECDH shared secret comes from HSM, everything else is local
+- **AES-KW unwrap** uses Node.js `id-aes256-wrap` cipher (not WebCrypto) — TODO: replace with pure WebCrypto for browser compatibility
 - WKD lookup: advanced method first (`openpgpkey.<domain>`), 5s timeout, fallback to direct
+
+## Phase 2 — completed tests (tested against real HSM at https://my.ence.do)
+| Test | Description | Status |
+|---|---|---|
+| T2.0 | WKD hash + lookup | ✅ |
+| T2.1 | HSM keygen + RFC 4880 cert (Ed25519 + X25519) | ✅ |
+| T2.3 | Encrypt to WKD recipient key | ✅ |
+| T2.4 | Encrypt + decrypt via HSM ECDH | ✅ |
+| T2.5 | Ed25519 sign via HSM (verified with Node.js crypto) | ✅ |
+
+## Key bugs fixed during Phase 2
+- **cert-builder.js**: RFC 6637 §9 — ECDH subkey body order must be `OID | MPI | KDF params` (KDF params were before MPI)
+- **cert-builder.js**: `Ed25519ph` → `Ed25519` for cert signatures (GPG verifies standard Ed25519, not pre-hashed variant)
+- **openpgp-bridge.js PKESK**: openpgp.js v6 `pkesk.encrypted = { V, C }` — not an array; `V` is raw MPI bytes (no 2-byte bit count header), `C.data` is wrapped key
+- **openpgp-bridge.js AES-KW**: WebCrypto `unwrapKey` cannot unwrap non-standard sizes; replaced with Node.js `id-aes256-wrap`
+- **hem-sdk.js searchKeys**: API expects base64-encoded DESCR with `^` prefix regex pattern
+- **hem-sdk.js createKeyPair**: missing `mode` field (`ED25519→ExDSA`, `CURVE25519→ECDH`)
+- **hem-sdk.js #req()**: Node.js `fetch` (undici) sends chunked encoding → HTTP 411; fixed with `node:https` + explicit `Content-Length`
+- **hem-sdk.js agent**: HSM rejects keep-alive connections → `agent: false` (fresh TLS per request)
+- **HSM scopes**: `keymgmt:use:<KID>` is per-key — need separate use tokens for sign key and ECDH key
 
 ## HSM key types
 | OpenPGP role | HEM type    | Algorithm |
