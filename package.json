@@ -1,0 +1,17 @@
+{
+  "name": "encedo-pgp-js",
+  "version": "0.1.0",
+  "description": "OpenPGP encryption/decryption/signing via Encedo HEM hardware security module",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "test:keygen":   "node test/test-keygen.js",
+    "test:wkd":      "node test/test-wkd-lookup.js",
+    "test:encrypt":  "node test/test-encrypt.js",
+    "test:decrypt":  "node test/test-decrypt.js",
+    "test:sign":     "node test/test-sign.js"
+  },
+  "dependencies": {
+    "openpgp": "^6.0.0"
+  }
+}
