@@ -78,15 +78,15 @@ npm run build   # produces dist/encedo-pgp.browser.js + dist/encedo-pgp.node.js
 
 ## DESCR schema (keychain.js)
 ```
-PGP:role=self:email=<email>:type=sign:slot=1  ← own Ed25519 signing key
-PGP:role=self:email=<email>:type=ecdh:slot=1  ← own X25519 ECDH key
-PGP:role=peer:email=<email>:type=sign         ← peer Ed25519 (for verify via HSM)
-PGP:role=peer:email=<email>:type=ecdh         ← peer X25519 (for encrypt via HSM)
+ETSPGP:self,<email>,sign,<iat>[,<exp>]  ← own Ed25519 signing key
+ETSPGP:self,<email>,ecdh,<iat>[,<exp>]  ← own X25519 ECDH key
+ETSPGP:peer,<email>,sign                ← peer Ed25519 (for verify via HSM)
+ETSPGP:peer,<email>,ecdh                ← peer X25519 (for encrypt via HSM)
 ```
+`iat` = Unix timestamp from keygen, baked into cert fingerprint/keyId.
 All DESCR strings built by `DESCR.*()` helpers — change in `keychain.js` only.
 DESCR values are base64-encoded when passed to HEM API (`encodeDescr()`).
-
-## HSM token scopes
+Key search: `findSelfSign(keys, email)`, `findSelfEcdh(keys, email)`, `findPeerSign(keys, email)`, `findPeerEcdh(keys, email)` — match any `iat`.
 | Operation | Scope |
 |---|---|
 | List / search keys | `keymgmt:list` |
@@ -98,7 +98,6 @@ DESCR values are base64-encoded when passed to HEM API (`encodeDescr()`).
 - WKD Publish not in browser tester (requires server-side auth — will be done in Carbonio plugin)
 - `decryptAndVerifyHSM` for embedded sigs uses `sigPkt.signatureData` (openpgp.js v6 internal) — verify still works but may need adjustment on openpgp.js upgrade
 - hem-sdk.js `searchKeys`: offset/limit path params not yet wired (TODO in SDK)
-- `keyId8` stability: `buildCertificate` must be called with `timestamp: 0` so the keyId is deterministic; production code should cache it after first keygen
 
 ## HEM SDK methods used (hem-sdk.js)
 | Method | Used in |

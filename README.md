@@ -68,12 +68,30 @@ Keys in the HSM are identified by their `description` field (base64-encoded UTF-
 
 | DESCR string | Meaning |
 |---|---|
-| `PGP:role=self:email=<email>:type=sign:slot=1` | Own Ed25519 signing key |
-| `PGP:role=self:email=<email>:type=ecdh:slot=1` | Own X25519 ECDH key |
-| `PGP:role=peer:email=<email>:type=sign` | Peer Ed25519 key (imported for verify) |
-| `PGP:role=peer:email=<email>:type=ecdh` | Peer X25519 key (imported for encrypt) |
+| `ETSPGP:self,<email>,sign,<iat>[,<exp>]` | Own Ed25519 signing key |
+| `ETSPGP:self,<email>,ecdh,<iat>[,<exp>]` | Own X25519 ECDH key |
+| `ETSPGP:peer,<email>,sign` | Peer Ed25519 key (imported for verify) |
+| `ETSPGP:peer,<email>,ecdh` | Peer X25519 key (imported for encrypt) |
+
+`iat` is the Unix timestamp from keygen — baked into the OpenPGP cert fingerprint/keyId so the cert can be deterministically rebuilt. `exp` is optional expiry (informational only).
 
 All DESCR strings are built by `DESCR.*()` helpers in `keychain.js` — change them there and nowhere else.
+
+```js
+import { DESCR, encodeDescr, parseDescr, findSelfSign, findSelfEcdh, findPeerSign } from './src/keychain.js';
+
+DESCR.selfSign(email, iat)     // 'ETSPGP:self,alice@example.com,sign,1743548554'
+DESCR.selfEcdh(email, iat)     // 'ETSPGP:self,alice@example.com,ecdh,1743548554'
+DESCR.peerSign(email)          // 'ETSPGP:peer,alice@example.com,sign'
+DESCR.peerEcdh(email)          // 'ETSPGP:peer,alice@example.com,ecdh'
+DESCR.selfAll(email)           // prefix for searchKeys()
+DESCR.peerAll(email)           // prefix for searchKeys()
+
+findSelfSign(keys, email)      // finds own sign key (any iat)
+findSelfEcdh(keys, email)      // finds own ecdh key (any iat)
+findPeerSign(keys, email)      // finds peer sign key
+parseDescr(str)                // → { role, email, type, iat, exp }
+```
 
 ---
 
@@ -94,25 +112,29 @@ const password = 'your-hsm-password';
 const genToken  = await hem.authorizePassword(password, 'keymgmt:gen');
 const listToken = await hem.authorizePassword(password, 'keymgmt:list');
 
-// 2. Generate Ed25519 (sign) + X25519 (ecdh) key pair
+// 2. Record creation timestamp — baked into cert fingerprint/keyId
+const iat = Math.floor(Date.now() / 1000);
+
+// 3. Generate Ed25519 (sign) + X25519 (ecdh) key pair
 const { kid: kid_sign } = await hem.createKeyPair(
   genToken, 'alice@example.com', 'ED25519',
-  encodeDescr(DESCR.selfSign('alice@example.com'))
+  encodeDescr(DESCR.selfSign('alice@example.com', iat))
 );
 const { kid: kid_ecdh } = await hem.createKeyPair(
   genToken, 'alice@example.com', 'CURVE25519',
-  encodeDescr(DESCR.selfEcdh('alice@example.com'))
+  encodeDescr(DESCR.selfEcdh('alice@example.com', iat))
 );
 
-// 3. Build and export OpenPGP v4 certificate
+// 4. Build and export OpenPGP v4 certificate
 const signToken = await hem.authorizePassword(password, `keymgmt:use:${kid_sign}`);
 const ecdhToken = await hem.authorizePassword(password, `keymgmt:use:${kid_ecdh}`);
 
 const { cert } = await buildCertificate(
-  hem, signToken, kid_sign, kid_ecdh, 'alice@example.com', { ecdhToken }
+  hem, signToken, kid_sign, kid_ecdh, 'alice@example.com', { ecdhToken, timestamp: iat }
 );
 const armored = armorCertificate(cert);
 // armored = "-----BEGIN PGP PUBLIC KEY BLOCK-----..."
+// Fingerprint and keyId are deterministic — derive from iat
 ```
 
 ---
@@ -166,12 +188,23 @@ import { encryptMessage } from './src/openpgp-bridge.js';
 const armored = await encryptMessage('Hello!', ['bob@example.com']);
 ```
 
+**Sign + Encrypt in one message** (Thunderbird/Proton compatible — OPS+LiteralData+Sig inside SEIPD):
+```js
+import { encryptAndSign } from './src/openpgp-bridge.js';
+// keyId8 = 8-byte keyId from the sender's WKD cert (see below)
+// recipients = array of email addresses, armored keys, or openpgp.PublicKey objects
+const armored = await encryptAndSign(
+  hem, signToken, kid_sign, keyId8, ['bob@example.com'], 'Hello Bob!'
+);
+```
+
 **To a recipient whose keys are in the HSM** (cert rebuilt from HSM — no WKD needed):
 ```js
 import { encryptMessageHSM } from './src/openpgp-bridge.js';
 // Requires: keymgmt:use:<kid_sign> + keymgmt:use:<kid_ecdh> tokens for recipient's keys
+// Pass original iat from DESCR so the rebuilt cert has the correct keyId
 const armored = await encryptMessageHSM(
-  hem, signToken, ecdhToken, kid_sign, kid_ecdh, 'bob@example.com', 'Hello!'
+  hem, signToken, ecdhToken, kid_sign, kid_ecdh, 'bob@example.com', 'Hello!', { timestamp: iat }
 );
 ```
 
@@ -180,11 +213,19 @@ const armored = await encryptMessageHSM(
 ### Decrypt a message
 
 ```js
-import { decryptMessage } from './src/openpgp-bridge.js';
+import { decryptMessage, decryptAndVerify } from './src/openpgp-bridge.js';
 
 // fingerprint = 20-byte SHA-1 fingerprint of the X25519 subkey (from WKD cert)
+
+// Decrypt only:
 const plaintext = await decryptMessage(
   armoredMessage, hem, ecdhToken, kid_ecdh, pubkey32, fingerprint
+);
+
+// Decrypt + verify embedded signature (from encryptAndSign):
+const { data, valid, keyID } = await decryptAndVerify(
+  armoredMessage, hem, ecdhToken, kid_ecdh, pubkey32, fingerprint,
+  armoredSenderPublicKey  // fetched from WKD
 );
 ```
 
@@ -337,9 +378,10 @@ Keys are tagged by description field:
 
 | Role | DESCR | Key type |
 |------|-------|----------|
-| Own signing key | `PGP:role=self:email=<email>:type=sign:slot=1` | ED25519 |
-| Own ECDH key    | `PGP:role=self:email=<email>:type=ecdh:slot=1` | CURVE25519 |
-| Peer key        | `PGP:role=peer:email=<email>:type=ecdh`         | CURVE25519 (public) |
+| Own signing key | `ETSPGP:self,<email>,sign,<iat>[,<exp>]` | ED25519 |
+| Own ECDH key    | `ETSPGP:self,<email>,ecdh,<iat>[,<exp>]` | CURVE25519 |
+| Peer signing key | `ETSPGP:peer,<email>,sign`              | ED25519 (public) |
+| Peer ECDH key   | `ETSPGP:peer,<email>,ecdh`               | CURVE25519 (public) |
 
 ---
 
