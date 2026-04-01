@@ -131,6 +131,122 @@ export async function decryptMessage(armoredMessage, hem, token, kid_ecdh, ourPu
 }
 
 /**
+ * Decrypt a PGP message (HSM ECDH) and verify the embedded signature locally.
+ * Compatible with messages produced by Thunderbird, Proton, and standard OpenPGP clients.
+ *
+ * @param {string}     armoredMessage   ASCII-armored PGP message
+ * @param {object}     hem              HEM instance
+ * @param {string}     token            JWT with keymgmt:use:<kid_ecdh> scope
+ * @param {string}     kid_ecdh         X25519 key ID in HSM
+ * @param {Uint8Array} ourPubkey32      Our 32-byte X25519 public key
+ * @param {Uint8Array} fingerprint      20-byte SHA-1 fingerprint of our ECDH subkey
+ * @param {string}     armoredSenderKey Armored public key of the sender (for verification)
+ * @returns {Promise<{ data: string, valid: boolean, keyID: string }>}
+ *   data  — decrypted plaintext
+ *   valid — true if signature is valid
+ *   keyID — hex key ID of the signing key (upper case)
+ */
+export async function decryptAndVerify(armoredMessage, hem, token, kid_ecdh, ourPubkey32, fingerprint, armoredSenderKey) {
+  const message    = await openpgp.readMessage({ armoredMessage });
+  const senderKey  = await openpgp.readKey({ armoredKey: armoredSenderKey });
+
+  const pkeskPackets = message.packets.filterByTag(openpgp.enums.packet.publicKeyEncryptedSessionKey);
+  if (pkeskPackets.length === 0) throw new Error('No PKESK packet found in message');
+
+  for (const pkesk of pkeskPackets) {
+    try {
+      const sessionKey = await decryptPkesk(pkesk, hem, token, kid_ecdh, ourPubkey32, fingerprint);
+      const result = await openpgp.decrypt({
+        message,
+        sessionKeys: [sessionKey],
+        verificationKeys: [senderKey],
+      });
+      const sig = result.signatures[0];
+      if (!sig) return { data: result.data, valid: false, keyID: null };
+      try {
+        await sig.verified;
+        return { data: result.data, valid: true, keyID: sig.keyID.toHex().toUpperCase() };
+      } catch {
+        return { data: result.data, valid: false, keyID: sig.keyID?.toHex().toUpperCase() ?? null };
+      }
+    } catch (e) {
+      continue;
+    }
+  }
+
+  throw new Error('Could not decrypt: no matching PKESK for our key');
+}
+
+/**
+ * Decrypt a PGP message (HSM ECDH) and verify the embedded signature via HSM.
+ * The sender's public key must have been previously imported via importKeyFromWKD()
+ * (stored with DESCR.peerSign tag).
+ *
+ * @param {string}     armoredMessage  ASCII-armored PGP message
+ * @param {object}     hem             HEM instance
+ * @param {string}     ecdhToken       JWT with keymgmt:use:<kid_ecdh> scope
+ * @param {string}     kid_ecdh        X25519 key ID in HSM (recipient)
+ * @param {Uint8Array} ourPubkey32     Our 32-byte X25519 public key
+ * @param {Uint8Array} fingerprint     20-byte SHA-1 fingerprint of our ECDH subkey
+ * @param {string}     verifyToken     JWT with keymgmt:use:<kid_sender_sign> scope
+ * @param {string}     kid_sender_sign Ed25519 key ID in HSM (imported sender key)
+ * @returns {Promise<{ data: string, valid: boolean }>}
+ */
+export async function decryptAndVerifyHSM(armoredMessage, hem, ecdhToken, kid_ecdh, ourPubkey32, fingerprint, verifyToken, kid_sender_sign) {
+  const message = await openpgp.readMessage({ armoredMessage });
+
+  const pkeskPackets = message.packets.filterByTag(openpgp.enums.packet.publicKeyEncryptedSessionKey);
+  if (pkeskPackets.length === 0) throw new Error('No PKESK packet found in message');
+
+  let plaintext = null;
+  for (const pkesk of pkeskPackets) {
+    try {
+      const sessionKey = await decryptPkesk(pkesk, hem, ecdhToken, kid_ecdh, ourPubkey32, fingerprint);
+      const { data } = await openpgp.decrypt({ message, sessionKeys: [sessionKey] });
+      plaintext = data;
+      break;
+    } catch (e) {
+      continue;
+    }
+  }
+  if (plaintext === null) throw new Error('Could not decrypt: no matching PKESK for our key');
+
+  // Extract signature bytes from the message and verify via HSM
+  const sigPackets = message.packets.filterByTag(openpgp.enums.packet.signature);
+  if (!sigPackets.length) return { data: plaintext, valid: false };
+
+  // Reconstruct the signed data: LiteralData packet content + sig packet hash prefix + trailer
+  // openpgp.js v6: get the literal data packet
+  const litPackets = message.packets.filterByTag(openpgp.enums.packet.literalData);
+  if (!litPackets.length) return { data: plaintext, valid: false };
+
+  const litData  = litPackets[0];
+  const sigPkt   = sigPackets[0];
+
+  // Build the data that was hashed for this signature (RFC 4880 §5.2.4)
+  // For literal data signatures: hash over the literal body + sig hash prefix + trailer
+  const litBody      = litData.data instanceof Uint8Array ? litData.data
+                     : new TextEncoder().encode(litData.data);
+  const hashedLen    = sigPkt.rawNotations?.length ?? 0; // fallback
+  // Use openpgp.js internal: sigPkt.signatureData has the hash prefix bytes
+  const sigData      = sigPkt.signatureData; // Uint8Array: version+type+algo+hash+hashedSubpkts
+  const trailerLen   = sigData.length;
+  const trailer      = new Uint8Array([0x04, 0xFF,
+    (trailerLen>>>24)&0xFF, (trailerLen>>>16)&0xFF, (trailerLen>>>8)&0xFF, trailerLen&0xFF]);
+  const hash         = await sha256(concat(litBody, sigData, trailer));
+
+  // Reconstruct 64-byte sig from R+S MPIs
+  const { sig64 } = parseSigPacketForVerify(sigPkt.write());
+
+  try {
+    await hem.exdsaVerify(verifyToken, kid_sender_sign, hash, sig64, 'Ed25519');
+    return { data: plaintext, valid: true };
+  } catch {
+    return { data: plaintext, valid: false };
+  }
+}
+
+/**
  * Decrypt a single PKESK (Public-Key Encrypted Session Key) packet.
  * Only supports algorithm 18 (ECDH, curve25519).
  *

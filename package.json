@@ -5,13 +5,20 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "test:keygen":   "node test/test-keygen.js",
-    "test:wkd":      "node test/test-wkd-lookup.js",
-    "test:encrypt":  "node test/test-encrypt.js",
-    "test:decrypt":  "node test/test-decrypt.js",
-    "test:sign":     "node test/test-sign.js"
+    "build": "rollup -c",
+    "build:browser": "rollup -c --filter browser",
+    "test:keygen": "node test/test-keygen.js",
+    "test:wkd": "node test/test-wkd-lookup.js",
+    "test:encrypt": "node test/test-encrypt.js",
+    "test:decrypt": "node test/test-decrypt.js",
+    "test:sign": "node test/test-sign.js"
   },
   "dependencies": {
     "openpgp": "^6.0.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-alias": "^6.0.0",
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "rollup": "^4.60.1"
   }
 }
