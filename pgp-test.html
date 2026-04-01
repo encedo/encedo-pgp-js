@@ -962,6 +962,8 @@
             const { verifySignedMessageHSM } = await import('./src/openpgp-bridge.js');
             const { DESCR, decodeDescr, findSelfSign, findPeerSign } = await import('./src/keychain.js');
 
+            const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
+
             // Find sign key — check selfSign first, then peerSign
             const keys = await hem.searchKeys(listTok, DESCR.selfAll(email));
             let signKey = findSelfSign(keys, email);
