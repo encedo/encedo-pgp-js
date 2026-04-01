@@ -11,6 +11,7 @@ export { buildCertificate, armorCertificate, signCleartextMessage } from './cert
 export {
   encryptMessage,
   encryptMessageHSM,
+  encryptAndSign,
   decryptMessage,
   decryptAndVerify,
   decryptAndVerifyHSM,

@@ -653,16 +653,17 @@
                 <textarea id="encryptPubkey" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----..."></textarea>
             </div>
             <div class="field">
+                <label>Sender Email (wymagany dla Sign+Encrypt — klucz musi być w HSM)</label>
+                <input type="email" id="encryptFromEmail" placeholder="user@domain.tld">
+            </div>
+            <div class="field">
                 <label>Message</label>
                 <textarea id="encryptMessage" class="tall" placeholder="Message to encrypt..."></textarea>
             </div>
             <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
                 <button class="btn btn-primary" id="btnEncrypt">Encrypt (local)</button>
                 <button class="btn btn-secondary" id="btnEncryptHSM">Encrypt (via HSM)</button>
-                <label style="text-transform:none;font-size:12px;color:var(--text2)">
-                    <input type="checkbox" id="encryptAndSign" style="width:auto;margin-right:6px">
-                    Also sign (requires HSM)
-                </label>
+                <button class="btn btn-secondary" id="btnEncryptAndSign">Sign+Encrypt (HSM)</button>
             </div>
             <div class="divider"></div>
             <div class="output-label">Encrypted Message (Armored)</div>
@@ -681,8 +682,12 @@
         </div>
         <div class="panel-body">
             <div class="field">
-                <label>Decryption Key (email or kid) — must be in HSM</label>
-                <input type="text" id="decryptKey" placeholder="user@domain.tld">
+                <label>Decryption Key — Recipient Email (must be in HSM)</label>
+                <input type="email" id="decryptKey" placeholder="user@domain.tld">
+            </div>
+            <div class="field">
+                <label>Sender Email (opcjonalnie — do weryfikacji podpisu, klucz z WKD)</label>
+                <input type="email" id="decryptSenderEmail" placeholder="sender@domain.tld">
             </div>
             <div class="field">
                 <label>Encrypted Message (Armored)</label>
@@ -692,6 +697,7 @@
             <div class="divider"></div>
             <div class="output-label">Plaintext</div>
             <div class="output tall" id="decryptOutput">--</div>
+            <div id="decryptSigStatus" style="display:none;margin-top:8px;padding:8px 12px;border-radius:6px;font-size:13px;font-family:monospace"></div>
         </div>
     </div>
 
@@ -778,17 +784,20 @@
 
         try {
             const { buildCertificate, armorCertificate } = await import('./src/cert-builder.js');
-            const { DESCR, encodeDescr } = await import('./src/keychain.js');
+            const { DESCR, encodeDescr, parseDescr } = await import('./src/keychain.js');
+
+            // Record creation timestamp — baked into cert fingerprint
+            const iat = Math.floor(Date.now() / 1000);
 
             const genToken  = await hem.authorizePassword(hsmPassword, 'keymgmt:gen');
             setOutput('keygenOutput', '2/5 Generuję Ed25519...', null);
 
-            const signDescr = encodeDescr(DESCR.selfSign(email, Number(slot)));
+            const signDescr = encodeDescr(DESCR.selfSign(email, iat));
             const { kid: kid_sign } = await hem.createKeyPair(genToken, `pgp-sign-${email}`, 'ED25519', signDescr);
 
             setOutput('keygenOutput', `3/5 Generuję X25519... (kid_sign=${kid_sign})`, null);
 
-            const ecdhDescr = encodeDescr(DESCR.selfEcdh(email, Number(slot)));
+            const ecdhDescr = encodeDescr(DESCR.selfEcdh(email, iat));
             const { kid: kid_ecdh } = await hem.createKeyPair(genToken, `pgp-ecdh-${email}`, 'CURVE25519', ecdhDescr);
 
             setOutput('keygenOutput', `4/5 Buduję certyfikat... (kid_ecdh=${kid_ecdh})`, null);
@@ -797,7 +806,7 @@
             const useEcdhToken = await hem.authorizePassword(hsmPassword, `keymgmt:use:${kid_ecdh}`);
 
             const { cert, fingerprint, keyId } = await buildCertificate(
-                hem, useToken, kid_sign, kid_ecdh, email, { ecdhToken: useEcdhToken }
+                hem, useToken, kid_sign, kid_ecdh, email, { ecdhToken: useEcdhToken, timestamp: iat }
             );
             lastArmoredCert = armorCertificate(cert);
             lastCertBinary  = cert;
@@ -836,7 +845,7 @@
         }
         container.innerHTML = '<div class="output" style="color:var(--text3)">Loading...</div>';
         try {
-            const keys = await hem.searchKeys(listToken, 'PGP:ro');
+            const keys = await hem.searchKeys(listToken, 'ETSPGP:');
             if (!keys.length) {
                 container.innerHTML = '<div class="output" style="text-align:center;color:var(--text3)">No PGP keys found</div>';
                 return;
@@ -874,14 +883,14 @@
         setOutput('signOutput', '1/4 Szukam klucza sign...', null);
 
         try {
-            const { DESCR, decodeDescr } = await import('./src/keychain.js');
+            const { DESCR, decodeDescr, findSelfSign } = await import('./src/keychain.js');
             const { signCleartextMessage } = await import('./src/cert-builder.js');
             const { lookupKey } = await import('./src/wkd-client.js');
             const openpgp = await import('openpgp');
 
             const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
-            const keys    = await hem.searchKeys(listTok, DESCR.selfSign(email));
-            const signKey = keys.find(k => decodeDescr(k.description) === DESCR.selfSign(email));
+            const keys = await hem.searchKeys(listTok, DESCR.selfAll(email));
+            const signKey = findSelfSign(keys, email);
             if (!signKey) throw new Error(`Nie znaleziono klucza sign dla ${email}`);
 
             setOutput('signOutput', '2/4 Pobieram pubkey z WKD...', null);
@@ -951,14 +960,14 @@
         setOutput('verifyOutput', 'Szukam klucza w HSM...', null);
         try {
             const { verifySignedMessageHSM } = await import('./src/openpgp-bridge.js');
-            const { DESCR, decodeDescr } = await import('./src/keychain.js');
+            const { DESCR, decodeDescr, findSelfSign, findPeerSign } = await import('./src/keychain.js');
 
             // Find sign key — check selfSign first, then peerSign
-            const keys = await hem.searchKeys(listTok, DESCR.selfSign(email));
-            let signKey = keys.find(k => decodeDescr(k.description) === DESCR.selfSign(email));
+            const keys = await hem.searchKeys(listTok, DESCR.selfAll(email));
+            let signKey = findSelfSign(keys, email);
             if (!signKey) {
-                const peerKeys = await hem.searchKeys(listTok, DESCR.peerSign(email));
-                signKey = peerKeys.find(k => decodeDescr(k.description) === DESCR.peerSign(email));
+                const peerKeys = await hem.searchKeys(listTok, DESCR.peerAll(email));
+                signKey = findPeerSign(peerKeys, email);
             }
             if (!signKey) throw new Error(`Brak klucza sign w HSM dla ${email}`);
             const kid = signKey.kid;
@@ -987,23 +996,26 @@
 
         try {
             const { buildCertificate, armorCertificate } = await import('./src/cert-builder.js');
-            const { DESCR, decodeDescr } = await import('./src/keychain.js');
+            const { DESCR, decodeDescr, parseDescr, findSelfSign, findSelfEcdh } = await import('./src/keychain.js');
 
             const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
             const allKeys = await hem.searchKeys(listTok, DESCR.selfAll(ref));
 
-            const signKey = allKeys.find(k => decodeDescr(k.description) === DESCR.selfSign(ref));
-            const ecdhKey = allKeys.find(k => decodeDescr(k.description) === DESCR.selfEcdh(ref));
+            const signKey = findSelfSign(allKeys, ref);
+            const ecdhKey = findSelfEcdh(allKeys, ref);
 
             if (!signKey || !ecdhKey) throw new Error(`Brak kluczy sign/ecdh dla ${ref} w HSM`);
 
-            setOutput('exportOutput', `kid_sign: ${signKey.kid}\nkid_ecdh: ${ecdhKey.kid}\nBuduję certyfikat...`, null);
+            // Restore original creation timestamp so cert fingerprint matches WKD
+            const signIat = parseDescr(decodeDescr(signKey.description))?.iat ?? 0;
+
+            setOutput('exportOutput', `kid_sign: ${signKey.kid}\nkid_ecdh: ${ecdhKey.kid}\nBuduję certyfikat (iat=${signIat})...`, null);
 
             const useTok     = await hem.authorizePassword(hsmPassword, `keymgmt:use:${signKey.kid}`);
             const useEcdhTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${ecdhKey.kid}`);
 
             const { cert, fingerprint } = await buildCertificate(
-                hem, useTok, signKey.kid, ecdhKey.kid, ref, { ecdhToken: useEcdhTok }
+                hem, useTok, signKey.kid, ecdhKey.kid, ref, { ecdhToken: useEcdhTok, timestamp: signIat }
             );
 
             lastExportCert  = armorCertificate(cert);
@@ -1085,20 +1097,64 @@
         setOutput('encryptOutput', 'Szukam kluczy w HSM...', null);
         try {
             const { encryptMessageHSM } = await import('./src/openpgp-bridge.js');
-            const { DESCR, decodeDescr } = await import('./src/keychain.js');
+            const { DESCR, decodeDescr, parseDescr, findSelfSign, findSelfEcdh } = await import('./src/keychain.js');
 
             const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
             const allKeys = await hem.searchKeys(listTok, DESCR.selfAll(toEmail));
-            const signKey = allKeys.find(k => decodeDescr(k.description) === DESCR.selfSign(toEmail));
-            const ecdhKey = allKeys.find(k => decodeDescr(k.description) === DESCR.selfEcdh(toEmail));
+            const signKey = findSelfSign(allKeys, toEmail);
+            const ecdhKey = findSelfEcdh(allKeys, toEmail);
             if (!signKey) throw new Error(`Brak klucza Ed25519 w HSM dla ${toEmail}`);
             if (!ecdhKey) throw new Error(`Brak klucza X25519 w HSM dla ${toEmail}`);
+
+            const signIat = parseDescr(decodeDescr(signKey.description))?.iat ?? 0;
 
             const signTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${signKey.kid}`);
             const ecdhTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${ecdhKey.kid}`);
 
             setOutput('encryptOutput', 'Buduję cert z HSM i szyfruję...', null);
-            const armored = await encryptMessageHSM(hem, signTok, ecdhTok, signKey.kid, ecdhKey.kid, toEmail, plaintext);
+            const armored = await encryptMessageHSM(hem, signTok, ecdhTok, signKey.kid, ecdhKey.kid, toEmail, plaintext, { timestamp: signIat });
+            setOutput('encryptOutput', armored, 'success');
+        } catch (e) {
+            setOutput('encryptOutput', e.message, 'error');
+        }
+    });
+
+    document.getElementById('btnEncryptAndSign').addEventListener('click', async () => {
+        if (!hem || !hsmPassword) { setOutput('encryptOutput', 'Najpierw połącz z HSM.', 'error'); return; }
+        const plaintext     = document.getElementById('encryptMessage').value.trim();
+        const toEmail       = document.getElementById('encryptTo').value.trim();
+        const armoredPubkey = document.getElementById('encryptPubkey').value.trim();
+        const fromEmail     = document.getElementById('encryptFromEmail').value.trim();
+        if (!plaintext)  { setOutput('encryptOutput', 'Wpisz wiadomość.', 'error'); return; }
+        if (!fromEmail)  { setOutput('encryptOutput', 'Podaj swój email (pole Sender Email).', 'error'); return; }
+        if (!toEmail && !armoredPubkey) { setOutput('encryptOutput', 'Podaj email odbiorcy lub wklej jego klucz publiczny.', 'error'); return; }
+
+        setOutput('encryptOutput', 'Szukam swoich kluczy w HSM...', null);
+        try {
+            const { encryptAndSign } = await import('./src/openpgp-bridge.js');
+            const { lookupKey } = await import('./src/wkd-client.js');
+            const { DESCR, decodeDescr, findSelfSign } = await import('./src/keychain.js');
+            const openpgp = await import('openpgp');
+
+            const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
+            const allKeys = await hem.searchKeys(listTok, DESCR.selfAll(fromEmail));
+            const signKey = findSelfSign(allKeys, fromEmail);
+            if (!signKey) throw new Error(`Brak klucza Ed25519 w HSM dla ${fromEmail}`);
+
+            const signTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${signKey.kid}`);
+
+            // Get keyId8 from WKD cert — authoritative source, same cert that recipients use
+            setOutput('encryptOutput', 'Pobieram keyId z WKD...', null);
+            const senderKeyBytes = await lookupKey(fromEmail);
+            if (!senderKeyBytes) throw new Error(`Brak klucza WKD dla ${fromEmail} — opublikuj klucz najpierw`);
+            const senderKey = await openpgp.readKey({ binaryKey: senderKeyBytes });
+            const keyId8 = senderKey.keyPacket.getKeyID().write();
+
+            // Recipient: armored key or email (WKD lookup inside encryptAndSign)
+            const recipient = armoredPubkey || toEmail;
+
+            setOutput('encryptOutput', 'Podpisuję i szyfruję...', null);
+            const armored = await encryptAndSign(hem, signTok, signKey.kid, keyId8, [recipient], plaintext);
             setOutput('encryptOutput', armored, 'success');
         } catch (e) {
             setOutput('encryptOutput', e.message, 'error');
@@ -1113,52 +1169,74 @@
     // ── Decrypt ───────────────────────────────────────────────────────────────
     document.getElementById('btnDecrypt').addEventListener('click', async () => {
         if (!hem || !hsmPassword) { setOutput('decryptOutput', 'Najpierw połącz z HSM.', 'error'); return; }
-        const armoredMsg = document.getElementById('decryptMessage').value.trim();
-        const emailOrKid = document.getElementById('decryptKey').value.trim();
+        const armoredMsg  = document.getElementById('decryptMessage').value.trim();
+        const emailOrKid  = document.getElementById('decryptKey').value.trim();
+        const senderEmail = document.getElementById('decryptSenderEmail').value.trim();
         if (!armoredMsg) { setOutput('decryptOutput', 'Wklej zaszyfrowaną wiadomość.', 'error'); return; }
-        if (!emailOrKid) { setOutput('decryptOutput', 'Podaj email lub KID klucza ECDH.', 'error'); return; }
+        if (!emailOrKid) { setOutput('decryptOutput', 'Podaj email klucza odbiorcy.', 'error'); return; }
+
+        const sigEl = document.getElementById('decryptSigStatus');
+        sigEl.style.display = 'none';
 
         setOutput('decryptOutput', 'Szukam klucza ECDH...', null);
         try {
-            const { decryptMessage } = await import('./src/openpgp-bridge.js');
-            const { DESCR, decodeDescr } = await import('./src/keychain.js');
+            const { decryptMessage, decryptAndVerify } = await import('./src/openpgp-bridge.js');
+            const { DESCR, decodeDescr, findSelfEcdh } = await import('./src/keychain.js');
             const { lookupKey } = await import('./src/wkd-client.js');
             const openpgp = await import('openpgp');
 
             const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
 
-            // Find ECDH key by email descr or treat as KID directly
-            let ecdhKid;
-            const isKid = /^[0-9a-f]{32}$/i.test(emailOrKid);
-            if (isKid) {
-                ecdhKid = emailOrKid;
-            } else {
-                const keys = await hem.searchKeys(listTok, DESCR.selfEcdh(emailOrKid));
-                const found = keys.find(k => decodeDescr(k.description) === DESCR.selfEcdh(emailOrKid));
-                if (!found) throw new Error(`Brak klucza ECDH w HSM dla ${emailOrKid}`);
-                ecdhKid = found.kid;
-            }
+            // Find ECDH key
+            const keys = await hem.searchKeys(listTok, DESCR.selfAll(emailOrKid));
+            const found = findSelfEcdh(keys, emailOrKid);
+            if (!found) throw new Error(`Brak klucza ECDH w HSM dla ${emailOrKid}`);
+            const ecdhKid = found.kid;
 
-            const useTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${ecdhKid}`);
-            const pubInfo = await hem.getPubKey(useTok, ecdhKid);
+            const useTok   = await hem.authorizePassword(hsmPassword, `keymgmt:use:${ecdhKid}`);
+            const pubInfo  = await hem.getPubKey(useTok, ecdhKid);
             const pubkey32 = Uint8Array.from(atob(pubInfo.pubkey), c => c.charCodeAt(0));
 
             // Get subkey fingerprint from WKD
-            const lookupEmail = isKid ? null : emailOrKid;
-            let fingerprint;
-            if (lookupEmail) {
-                const keyBytes = await lookupKey(lookupEmail);
-                if (!keyBytes) throw new Error(`Brak klucza WKD dla ${lookupEmail} — potrzebny do fingerprintu`);
-                const key = await openpgp.readKey({ binaryKey: keyBytes });
-                const subkeys = key.getSubkeys();
-                fingerprint = Uint8Array.from(subkeys[0].getFingerprint().match(/.{2}/g).map(b => parseInt(b, 16)));
-            } else {
-                throw new Error('Podaj email (nie KID) aby pobrać fingerprint subklucza z WKD');
-            }
+            const keyBytes = await lookupKey(emailOrKid);
+            if (!keyBytes) throw new Error(`Brak klucza WKD dla ${emailOrKid} — potrzebny do fingerprintu`);
+            const ownKey    = await openpgp.readKey({ binaryKey: keyBytes });
+            const subkeys   = ownKey.getSubkeys();
+            const fingerprint = Uint8Array.from(subkeys[0].getFingerprint().match(/.{2}/g).map(b => parseInt(b, 16)));
 
-            setOutput('decryptOutput', 'Odszyfrowywanie przez HSM...', null);
-            const plaintext = await decryptMessage(armoredMsg, hem, useTok, ecdhKid, pubkey32, fingerprint);
-            setOutput('decryptOutput', plaintext, 'success');
+            if (senderEmail) {
+                // ── Decrypt + Verify ──────────────────────────────────────────
+                setOutput('decryptOutput', 'Pobieram klucz nadawcy z WKD...', null);
+                const senderBytes = await lookupKey(senderEmail);
+                if (!senderBytes) throw new Error(`Brak klucza WKD dla nadawcy ${senderEmail}`);
+                const senderKey      = await openpgp.readKey({ binaryKey: senderBytes });
+                const armoredSenderKey = senderKey.armor();
+
+                setOutput('decryptOutput', 'Odszyfrowywanie + weryfikacja podpisu...', null);
+                const result = await decryptAndVerify(
+                    armoredMsg, hem, useTok, ecdhKid, pubkey32, fingerprint, armoredSenderKey
+                );
+
+                setOutput('decryptOutput', result.data, 'success');
+
+                sigEl.style.display = 'block';
+                if (result.valid) {
+                    sigEl.style.background = 'rgba(34,197,94,0.12)';
+                    sigEl.style.color = '#22c55e';
+                    sigEl.style.border = '1px solid rgba(34,197,94,0.3)';
+                    sigEl.textContent = `✓ Podpis prawidłowy — keyID: ${result.keyID}`;
+                } else {
+                    sigEl.style.background = 'rgba(239,68,68,0.12)';
+                    sigEl.style.color = '#ef4444';
+                    sigEl.style.border = '1px solid rgba(239,68,68,0.3)';
+                    sigEl.textContent = `✗ Podpis nieprawidłowy lub brak podpisu${result.keyID ? ' — keyID: ' + result.keyID : ''}`;
+                }
+            } else {
+                // ── Decrypt only ─────────────────────────────────────────────
+                setOutput('decryptOutput', 'Odszyfrowywanie przez HSM...', null);
+                const plaintext = await decryptMessage(armoredMsg, hem, useTok, ecdhKid, pubkey32, fingerprint);
+                setOutput('decryptOutput', plaintext, 'success');
+            }
         } catch (e) {
             setOutput('decryptOutput', e.message, 'error');
         }

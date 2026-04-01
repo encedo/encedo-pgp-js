@@ -39,9 +39,9 @@ const OID_X25519 = new Uint8Array([0x2b, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x0
  * @param {string} plaintext  Message to encrypt
  * @returns {Promise<string>} ASCII-armored encrypted message
  */
-export async function encryptMessageHSM(hem, signToken, ecdhToken, kid_sign, kid_ecdh, email, plaintext) {
+export async function encryptMessageHSM(hem, signToken, ecdhToken, kid_sign, kid_ecdh, email, plaintext, opts = {}) {
   const { buildCertificate } = await import('./cert-builder.js');
-  const { cert } = await buildCertificate(hem, signToken, kid_sign, kid_ecdh, email, { ecdhToken });
+  const { cert } = await buildCertificate(hem, signToken, kid_sign, kid_ecdh, email, { ecdhToken, timestamp: opts.timestamp ?? 0 });
   const pubKey  = await openpgp.readKey({ binaryKey: cert });
   const message = await openpgp.createMessage({ text: plaintext });
   return openpgp.encrypt({ message, encryptionKeys: pubKey });
@@ -113,6 +113,7 @@ export async function decryptMessage(armoredMessage, hem, token, kid_ecdh, ourPu
   if (pkeskPackets.length === 0) throw new Error('No PKESK packet found in message');
 
   // Try each PKESK (there may be multiple recipients)
+  let lastErr = null;
   for (const pkesk of pkeskPackets) {
     try {
       const sessionKey = await decryptPkesk(pkesk, hem, token, kid_ecdh, ourPubkey32, fingerprint);
@@ -122,12 +123,13 @@ export async function decryptMessage(armoredMessage, hem, token, kid_ecdh, ourPu
       });
       return data;
     } catch (e) {
-      // This PKESK was not addressed to us (or decryption failed) — try next
+      console.error('decryptMessage PKESK failed:', e);
+      lastErr = e;
       continue;
     }
   }
 
-  throw new Error('Could not decrypt: no matching PKESK for our key');
+  throw new Error(`Could not decrypt: ${lastErr?.message ?? 'no matching PKESK for our key'}`);
 }
 
 /**
@@ -153,14 +155,17 @@ export async function decryptAndVerify(armoredMessage, hem, token, kid_ecdh, our
   const pkeskPackets = message.packets.filterByTag(openpgp.enums.packet.publicKeyEncryptedSessionKey);
   if (pkeskPackets.length === 0) throw new Error('No PKESK packet found in message');
 
+  let lastErr = null;
   for (const pkesk of pkeskPackets) {
     try {
       const sessionKey = await decryptPkesk(pkesk, hem, token, kid_ecdh, ourPubkey32, fingerprint);
+      console.error('decryptAndVerify: sessionKey OK, calling openpgp.decrypt...');
       const result = await openpgp.decrypt({
         message,
         sessionKeys: [sessionKey],
         verificationKeys: [senderKey],
       });
+      console.error('decryptAndVerify: openpgp.decrypt OK, data.length=', result.data?.length);
       const sig = result.signatures[0];
       if (!sig) return { data: result.data, valid: false, keyID: null };
       try {
@@ -170,11 +175,13 @@ export async function decryptAndVerify(armoredMessage, hem, token, kid_ecdh, our
         return { data: result.data, valid: false, keyID: sig.keyID?.toHex().toUpperCase() ?? null };
       }
     } catch (e) {
+      console.error('decryptAndVerify PKESK failed:', e);
+      lastErr = e;
       continue;
     }
   }
 
-  throw new Error('Could not decrypt: no matching PKESK for our key');
+  throw new Error(`Could not decrypt: ${lastErr?.message ?? 'no matching PKESK for our key'}`);
 }
 
 /**
@@ -199,6 +206,7 @@ export async function decryptAndVerifyHSM(armoredMessage, hem, ecdhToken, kid_ec
   if (pkeskPackets.length === 0) throw new Error('No PKESK packet found in message');
 
   let plaintext = null;
+  let lastErr = null;
   for (const pkesk of pkeskPackets) {
     try {
       const sessionKey = await decryptPkesk(pkesk, hem, ecdhToken, kid_ecdh, ourPubkey32, fingerprint);
@@ -206,10 +214,11 @@ export async function decryptAndVerifyHSM(armoredMessage, hem, ecdhToken, kid_ec
       plaintext = data;
       break;
     } catch (e) {
+      lastErr = e;
       continue;
     }
   }
-  if (plaintext === null) throw new Error('Could not decrypt: no matching PKESK for our key');
+  if (plaintext === null) throw new Error(`Could not decrypt: ${lastErr?.message ?? 'no matching PKESK for our key'}`);
 
   // Extract signature bytes from the message and verify via HSM
   const sigPackets = message.packets.filterByTag(openpgp.enums.packet.signature);
@@ -262,11 +271,15 @@ async function decryptPkesk(pkesk, hem, token, kid_ecdh, ourPubkey32, fingerprin
   }
 
   const { V, C } = pkesk.encrypted;
-  if (!V || !C) throw new Error('Unexpected PKESK encrypted structure (missing V or C)');
+  if (!V || !C) {
+    console.error('decryptPkesk: unexpected structure', JSON.stringify({ keys: Object.keys(pkesk.encrypted ?? {}), algo: pkesk.publicKeyAlgorithm }));
+    throw new Error('Unexpected PKESK encrypted structure (missing V or C)');
+  }
 
   // V is returned by openpgp.js readMPI — already WITHOUT the 2-byte bit count header.
   // For ECDH X25519: V = 0x40 (native prefix) + 32 key bytes = 33 bytes total.
   const ephemeral32 = stripNativePrefix(V);
+  console.error(`decryptPkesk: V.length=${V?.length} ephemeral32.length=${ephemeral32?.length} C.data.length=${C?.data?.length}`);
 
   // C.data is the wrapped session key (already without the 1-byte length prefix)
   const wrappedKey = C.data;
@@ -280,7 +293,9 @@ async function decryptPkesk(pkesk, hem, token, kid_ecdh, ourPubkey32, fingerprin
   const kdfSymId  = 9; // AES-256
   const kwkLen    = 32; // bytes for AES-256
 
+  console.error(`decryptPkesk: sharedSecret.length=${sharedSecret?.length} fingerprint.length=${fingerprint?.length} wrappedKey.length=${wrappedKey?.length}`);
   const kwk = await rfc6637kdf(sharedSecret, kdfHashId, kdfSymId, fingerprint, OID_X25519, kwkLen);
+  console.error(`decryptPkesk: kwk=${Array.from(kwk).map(b=>b.toString(16).padStart(2,'0')).join('')}`);
 
   // 3. AES-256 Key Unwrap (RFC 3394) via WebCrypto AES-KW
   const sessionKeyAlgo = pkesk.sessionKeyAlgorithm
@@ -292,6 +307,7 @@ async function decryptPkesk(pkesk, hem, token, kid_ecdh, ourPubkey32, fingerprin
 
   const sessionKeyData = await aesKeyUnwrap(kwk, wrappedKey, algoId);
   const algoName = openpgp.enums.read(openpgp.enums.symmetric, algoId);
+  console.error(`decryptPkesk: sessionKeyData.length=${sessionKeyData?.length} algoId=${algoId} algoName=${algoName}`);
 
   return { data: sessionKeyData, algorithm: algoName };
 }
@@ -368,6 +384,51 @@ function concat(...arrays) {
 
 function toB64(bytes) {
   return btoa(String.fromCharCode(...bytes));
+}
+
+// Low-level packet encoding (mirrors private helpers in cert-builder.js)
+function u16be(n) { return new Uint8Array([n >> 8, n & 0xFF]); }
+function u32be(n) { return new Uint8Array([(n>>>24)&0xFF, (n>>>16)&0xFF, (n>>>8)&0xFF, n&0xFF]); }
+
+/** Encode a new-format OpenPGP packet (RFC 4880 §4.2). */
+function pktEncode(tag, body) {
+  const len = body.length;
+  let hdr;
+  if (len < 192) {
+    hdr = new Uint8Array([0xC0 | tag, len]);
+  } else if (len < 8384) {
+    const b = len - 192;
+    hdr = new Uint8Array([0xC0 | tag, ((b >> 8) & 0xFF) + 192, b & 0xFF]);
+  } else {
+    hdr = new Uint8Array([0xC0 | tag, 0xFF, (len>>>24)&0xFF, (len>>>16)&0xFF, (len>>>8)&0xFF, len&0xFF]);
+  }
+  return concat(hdr, body);
+}
+
+/** Encode one OpenPGP subpacket: length | type | data. */
+function subpktEncode(type, data) {
+  const body = concat(new Uint8Array([type]), data);
+  return concat(new Uint8Array([body.length]), body);
+}
+
+/**
+ * Encode an Ed25519 64-byte signature (R||S) as two OpenPGP MPIs.
+ * Each component is a "native" MPI: bit-count (2 bytes) + raw bytes.
+ */
+function encodeEdDSASig(sig64) {
+  function nativeMPI(bytes32) {
+    let bits = 256;
+    for (let i = 0; i < bytes32.length; i++) {
+      if (bytes32[i] === 0) { bits -= 8; continue; }
+      let b = bytes32[i], lz = 0;
+      while (!(b & 0x80)) { b <<= 1; lz++; }
+      bits -= lz;
+      break;
+    }
+    if (bits <= 0) bits = 1;
+    return concat(u16be(bits), bytes32);
+  }
+  return concat(nativeMPI(sig64.slice(0, 32)), nativeMPI(sig64.slice(32, 64)));
 }
 
 // ---------------------------------------------------------------------------
@@ -479,6 +540,120 @@ export async function verifySignedMessageHSM(hem, token, kid, armoredSigned) {
   const trailer    = new Uint8Array([0x04, 0xFF, (len>>>24)&0xFF, (len>>>16)&0xFF, (len>>>8)&0xFF, len&0xFF]);
   const hash       = await sha256(concat(msgBytes, signatureData, trailer));
   return hem.exdsaVerify(token, kid, hash, sig64, 'Ed25519');
+}
+
+// ---------------------------------------------------------------------------
+// Sign + Encrypt (one OpenPGP message, Thunderbird/Proton compatible)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sign and encrypt a message using an HSM Ed25519 signing key and one or more
+ * recipient public keys.  Produces a standard OpenPGP inline-signed encrypted
+ * message compatible with Thunderbird, Proton, Enigmail, and GPG:
+ *
+ *   PKESK  (one per recipient)
+ *   SEIPD {
+ *     OnePassSignaturePacket  (tag 4)
+ *     LiteralDataPacket       (tag 11)
+ *     SignaturePacket         (tag 2)
+ *   }
+ *
+ * Required scope: keymgmt:use:<kid_sign>
+ *
+ * @param {object}     hem        HEM instance
+ * @param {string}     signToken  JWT with keymgmt:use:<kid_sign> scope
+ * @param {string}     kid_sign   Ed25519 key ID in HSM
+ * @param {Uint8Array} keyId8     8-byte OpenPGP key ID of the signing key
+ *                                (last 8 bytes of SHA-1 fingerprint; returned by buildCertificate)
+ * @param {Array}      recipients Array of recipient descriptors (see below)
+ * @param {string}     plaintext  Message to sign and encrypt
+ * @returns {Promise<string>}     ASCII-armored encrypted+signed message
+ *
+ * Recipient descriptors (one of):
+ *   - string containing '@'  → email address, WKD lookup performed automatically
+ *   - string containing '-'  → ASCII-armored PGP public key block
+ *   - openpgp.PublicKey      → already-parsed public key object
+ */
+export async function encryptAndSign(hem, signToken, kid_sign, keyId8, recipients, plaintext) {
+  const ts = Math.floor(Date.now() / 1000);
+
+  // ── 1. Resolve all recipient public keys ────────────────────────────────
+  const encryptionKeys = [];
+  for (const r of recipients) {
+    if (r && typeof r === 'object' && r.keyPacket !== undefined) {
+      // Already an openpgp.PublicKey / Subkey object
+      encryptionKeys.push(r);
+    } else if (typeof r === 'string' && r.includes('@')) {
+      // Email address → WKD lookup
+      const keyBytes = await lookupKey(r);
+      if (!keyBytes) throw new Error(`encryptAndSign: no WKD key found for ${r}`);
+      encryptionKeys.push(await openpgp.readKey({ binaryKey: keyBytes }));
+    } else if (typeof r === 'string') {
+      // Armored public key block
+      encryptionKeys.push(await openpgp.readKey({ armoredKey: r }));
+    } else {
+      throw new Error('encryptAndSign: invalid recipient — must be email, armored key, or openpgp.PublicKey');
+    }
+  }
+  if (encryptionKeys.length === 0) throw new Error('encryptAndSign: no recipients');
+
+  // ── 2. Encode plaintext bytes ────────────────────────────────────────────
+  //   RFC 4880 §5.9: for a binary signature (type 0x00), only the literal data
+  //   content bytes are signed — not the LiteralData packet header (format, timestamp).
+  const dataBytes = new TextEncoder().encode(plaintext);
+
+  // ── 3. Build hashed subpackets for the signature ─────────────────────────
+  //   Signature creation time (subpkt 2) + issuer key ID (subpkt 16).
+  const hashedSubpkts = concat(
+    subpktEncode(2,  u32be(ts)),   // sig creation time
+    subpktEncode(16, keyId8),      // issuer key ID
+  );
+
+  // ── 4. sigData = the bytes included in the hash (RFC 4880 §5.2.4) ────────
+  //   v4 | sigType=0x00 | pkAlgo=22(EdDSA) | hashAlgo=8(SHA-256) | hashedLen | hashedSubpkts
+  const sigData = concat(
+    new Uint8Array([4, 0x00, 22, 8]),
+    u16be(hashedSubpkts.length),
+    hashedSubpkts,
+  );
+  const trailer = concat(new Uint8Array([0x04, 0xFF]), u32be(sigData.length));
+
+  // ── 5. Hash and sign via HSM ─────────────────────────────────────────────
+  const hash  = await sha256(concat(dataBytes, sigData, trailer));
+  const sig64 = await hem.exdsaSignBytes(signToken, kid_sign, hash, 'Ed25519');
+
+  // ── 6. Build SignaturePacket body (tag 2) ─────────────────────────────────
+  //   sigData | unhashedLen | unhashedSubpkts | hashLeft2 | R_MPI | S_MPI
+  const unhashedSubpkts = new Uint8Array(0); // issuer already in hashed subpkts
+  const sigBody = concat(
+    sigData,
+    u16be(unhashedSubpkts.length),
+    unhashedSubpkts,
+    hash.slice(0, 2),          // left-two hash bytes (quick check)
+    encodeEdDSASig(sig64),     // R MPI + S MPI
+  );
+  const sigPkt = pktEncode(2, sigBody);
+
+  // ── 7. Build signed Message and encrypt ──────────────────────────────────
+  //   We use openpgp.createMessage + message.sign(existingSig) rather than
+  //   openpgp.readMessage({ binaryMessage: concat(opsPkt, litPkt, sigPkt) }).
+  //
+  //   Why: readMessage stops consuming the PacketList stream after the first
+  //   "streaming" packet (LiteralData). The trailing SignaturePacket is left in
+  //   the internal stream and never enters the PacketList array. PacketList.write()
+  //   only iterates the array, so the Sig packet is silently dropped from the
+  //   SEIPD content → decrypt throws "Missing trailing signature packets".
+  //
+  //   message.sign([], [], existingSig) assembles [OPS, LiteralData, Sig] directly
+  //   into the PacketList array (no streaming), so write() serialises all three.
+  const litMsg    = await openpgp.createMessage({ binary: dataBytes, format: 'binary' });
+  const existingSig = await openpgp.readSignature({ binarySignature: sigPkt });
+  const signedMsg = await litMsg.sign([], [], existingSig);
+  return openpgp.encrypt({
+    message: signedMsg,
+    encryptionKeys,
+    config: { preferredCompressionAlgorithm: openpgp.enums.compression.uncompressed },
+  });
 }
 
 // ---------------------------------------------------------------------------

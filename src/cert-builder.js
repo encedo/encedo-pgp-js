@@ -372,9 +372,10 @@ export async function buildCertificate(hem, token, kid_sign, kid_ecdh, email, op
   const subkeyBody     = buildX25519SubkeyBody(ecdhPub32, ts);
   const uidBody        = buildUidBody(uid);
 
-  // 3. Compute key ID (needed in unhashed subpackets)
-  const keyId = await computeKeyId(primaryKeyBody);
-  const fingerprint = await computeFingerprint(primaryKeyBody);
+  // 3. Compute key ID and fingerprints
+  const keyId              = await computeKeyId(primaryKeyBody);
+  const fingerprint        = await computeFingerprint(primaryKeyBody);
+  const ecdhFingerprint    = await computeFingerprint(subkeyBody);
 
   // 4. Build UID certification signature (type 0x13)
   const certHashedSubpkts = concat(
@@ -425,7 +426,7 @@ export async function buildCertificate(hem, token, kid_sign, kid_ecdh, email, op
     packet(2,  subkeySigBody),
   );
 
-  return { cert, fingerprint, keyId };
+  return { cert, fingerprint, keyId, ecdhFingerprint };
 }
 
 /**

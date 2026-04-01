@@ -4,79 +4,101 @@
 JavaScript library for OpenPGP encryption/decryption/signing using Encedo HEM hardware security module.
 Private keys never leave the HSM — only public key export, signatures, and ECDH shared secrets cross the API.
 
-Part of **Encedo Mail** project (Phase 2).
+Works identically in **Node.js 20+** and **modern browsers** (no bundler required for source use).
+
+Part of **Encedo Mail** project — PGP integration for Carbonio webmail plugin.
 
 ## Project layout
 ```
 src/
-  index.js          ← public API re-exports
-  keychain.js       ← DESCR schema for PGP keys in HSM + search helpers
-  wkd-client.js     ← WKD public key lookup (advanced + direct method)
-  wkd-publish.js    ← POST/DELETE keys to encedo-wkd API
-  cert-builder.js   ← Build OpenPGP v4 certificate from HSM keys (RFC 4880)
-  openpgp-bridge.js ← Encrypt/decrypt via OpenPGP.js + HSM ECDH
+  index.js          ← public API re-exports (entry point for rollup bundle)
+  keychain.js       ← DESCR schema for PGP keys in HSM + encode/decode helpers
+  wkd-client.js     ← WKD public key lookup (advanced + direct method), async wkdHash
+  wkd-publish.js    ← POST/DELETE keys to encedo-wkd API (server auth required)
+  cert-builder.js   ← Build OpenPGP v4 cert from HSM keys; signCleartextMessage()
+  openpgp-bridge.js ← Encrypt/decrypt/sign/verify/import via OpenPGP.js + HSM
+  runtime/
+    index.js        ← Auto-detects Node vs Browser, delegates to implementation
+    node-crypto.js  ← sha1, sha256, aes256KeyUnwrap via node:crypto
+    browser-crypto.js ← sha1, sha256, aes256KeyUnwrap via crypto.subtle (AES-KW)
+dist/
+  encedo-pgp.browser.js  ← rollup bundle for browser (413KB, includes openpgp)
+  encedo-pgp.node.js     ← rollup bundle for Node.js (1.2MB, includes openpgp)
 test/
   util.js              ← parseArgs, prompt helpers
-  test-keygen.js       ← Generate key pair in HSM + build cert
+  test-keygen.js       ← Generate key pair in HSM + build+export cert
   test-wkd-lookup.js   ← WKD lookup for any email
+  test-wkd-import.js   ← Import peer pubkeys from WKD into HSM (sign+ecdh)
   test-encrypt.js      ← Encrypt to WKD recipient
-  test-decrypt.js      ← Decrypt with HSM key
-  test-sign.js         ← Sign with HSM Ed25519 key
+  test-decrypt.js      ← Decrypt with HSM key (fingerprint from WKD)
+  test-sign.js         ← Sign with HSM Ed25519, full OpenPGP cleartext format
+  test-verify-hsm.js   ← Verify cleartext signed message via HSM
+pgp-test.html          ← Full interactive browser tester
 ../../hem-sdk-js/hem-sdk.js  ← HEM SDK (separate repo, sibling folder)
 ```
 
 ## Dependencies
 - `openpgp@^6` — OpenPGP.js for encrypt/decrypt/parsing
 - `hem-sdk-js` — Encedo HEM SDK (sibling repo at `../hem-sdk-js/`)
+- **devDependencies**: `rollup`, `@rollup/plugin-node-resolve`, `@rollup/plugin-alias`
+
+## Build
+```bash
+npm run build   # produces dist/encedo-pgp.browser.js + dist/encedo-pgp.node.js
+```
+`rollup.config.js` substitutes `runtime/index.js` with the concrete implementation
+(browser-crypto or node-crypto) at build time — no dynamic imports in bundles.
 
 ## Key design decisions
 - **ES modules** (`"type": "module"`) — all files use `import/export`
-- **DESCR schema**: keys in HSM tagged as `PGP:role=self:email=<email>:type=sign|ecdh`
-- **cert-builder.js** implements RFC 4880 packet encoding from scratch (no external PGP lib for key building) — allows precise control over what the HSM signs
-- **Ed25519 (not Ed25519ph)** used for cert signatures — HSM receives SHA-256 digest of the signing data; GPG verifies with standard Ed25519
-- **RFC 6637 §8 KDF** implemented locally (SHA-256 + AES-256 KW) — ECDH shared secret comes from HSM, everything else is local
-- **AES-KW unwrap** uses Node.js `id-aes256-wrap` cipher (not WebCrypto) — TODO: replace with pure WebCrypto for browser compatibility
-- WKD lookup: advanced method first (`openpgpkey.<domain>`), 5s timeout, fallback to direct
+- **Runtime split**: `src/runtime/index.js` detects `process.versions?.node` and dynamically imports the correct backend. Bundles use static substitution.
+- **DESCR schema**: keys in HSM tagged per `keychain.js` — change strings there only
+- **Ed25519 (not Ed25519ph)**: HSM receives SHA-256 digest; GPG verifies standard Ed25519
+- **RFC 6637 §8 KDF**: ECDH shared secret from HSM, KDF+AES-KW done locally
+- **AES-KW unwrap**: Node uses `node:crypto` (id-aes256-wrap); Browser uses native `crypto.subtle.unwrapKey` with `AES-KW` + HMAC target (accepts arbitrary unwrapped key lengths)
+- **WKD lookup**: advanced method first (`openpgpkey.<domain>`), 5s timeout, fallback to direct
+- **No absolute paths** in any src file
 
-## Phase 2 — completed tests (tested against real HSM at https://my.ence.do)
-| Test | Description | Status |
-|---|---|---|
-| T2.0 | WKD hash + lookup | ✅ |
-| T2.1 | HSM keygen + RFC 4880 cert (Ed25519 + X25519) | ✅ |
-| T2.3 | Encrypt to WKD recipient key | ✅ |
-| T2.4 | Encrypt + decrypt via HSM ECDH | ✅ |
-| T2.5 | Ed25519 sign via HSM (verified with Node.js crypto) | ✅ |
+## Public API (src/openpgp-bridge.js + src/cert-builder.js)
 
-## Key bugs fixed during Phase 2
-- **cert-builder.js**: RFC 6637 §9 — ECDH subkey body order must be `OID | MPI | KDF params` (KDF params were before MPI)
-- **cert-builder.js**: `Ed25519ph` → `Ed25519` for cert signatures (GPG verifies standard Ed25519, not pre-hashed variant)
-- **openpgp-bridge.js PKESK**: openpgp.js v6 `pkesk.encrypted = { V, C }` — not an array; `V` is raw MPI bytes (no 2-byte bit count header), `C.data` is wrapped key
-- **openpgp-bridge.js AES-KW**: WebCrypto `unwrapKey` cannot unwrap non-standard sizes; replaced with Node.js `id-aes256-wrap`
-- **hem-sdk.js searchKeys**: API expects base64-encoded DESCR with `^` prefix regex pattern
-- **hem-sdk.js createKeyPair**: missing `mode` field (`ED25519→ExDSA`, `CURVE25519→ECDH`)
-- **hem-sdk.js #req()**: Node.js `fetch` (undici) sends chunked encoding → HTTP 411; fixed with `node:https` + explicit `Content-Length`
-- **hem-sdk.js agent**: HSM rejects keep-alive connections → `agent: false` (fresh TLS per request)
-- **HSM scopes**: `keymgmt:use:<KID>` is per-key — need separate use tokens for sign key and ECDH key
-
-## HSM key types
-| OpenPGP role | HEM type    | Algorithm |
-|---|---|---|
-| Primary signing key | ED25519   | Ed25519 |
-| ECDH subkey        | CURVE25519 | X25519  |
+| Function | Description |
+|---|---|
+| `buildCertificate(hem, token, kid_sign, kid_ecdh, email, opts)` | Build OpenPGP v4 cert from HSM keys |
+| `armorCertificate(cert)` | Binary cert → armored PGP PUBLIC KEY BLOCK |
+| `signCleartextMessage(hem, token, kid_sign, keyId8, message)` | HSM Ed25519 → `-----BEGIN PGP SIGNED MESSAGE-----` |
+| `encryptMessage(plaintext, emails)` | Encrypt to WKD recipients (local WebCrypto) |
+| `encryptMessageHSM(hem, signTok, ecdhTok, kid_sign, kid_ecdh, email, plaintext)` | Encrypt using cert rebuilt from HSM |
+| `decryptMessage(armored, hem, token, kid_ecdh, pubkey32, fingerprint)` | Decrypt via HSM ECDH |
+| `decryptAndVerify(armored, hem, token, kid_ecdh, pubkey32, fp, armoredSenderKey)` | Decrypt + verify sig locally (Thunderbird/Proton compat) |
+| `decryptAndVerifyHSM(armored, hem, ecdhTok, kid_ecdh, pubkey32, fp, verifyTok, kid_sender)` | Decrypt + verify sig via HSM |
+| `encryptAndSign(hem, signTok, kid_sign, keyId8, recipients, plaintext)` | Sign+encrypt in one SEIPD: OPS+LiteralData+Sig (Thunderbird/Proton compat) |
+| `verifySignedMessage(armored, armoredPubKey)` | Verify cleartext sig locally |
+| `verifySignedMessageHSM(hem, token, kid, armored)` | Verify cleartext sig via HSM |
+| `importKeyFromWKD(hem, token, email)` | Import Ed25519+X25519 from WKD → HSM with DESCR tags |
 
 ## DESCR schema (keychain.js)
 ```
-PGP:role=self:email=jan@firma.pl:type=sign:slot=1   ← own signing key
-PGP:role=self:email=jan@firma.pl:type=ecdh:slot=1   ← own ECDH key
-PGP:role=peer:email=alice@proton.me:type=ecdh        ← peer key (for encryption)
+PGP:role=self:email=<email>:type=sign:slot=1  ← own Ed25519 signing key
+PGP:role=self:email=<email>:type=ecdh:slot=1  ← own X25519 ECDH key
+PGP:role=peer:email=<email>:type=sign         ← peer Ed25519 (for verify via HSM)
+PGP:role=peer:email=<email>:type=ecdh         ← peer X25519 (for encrypt via HSM)
 ```
+All DESCR strings built by `DESCR.*()` helpers — change in `keychain.js` only.
 DESCR values are base64-encoded when passed to HEM API (`encodeDescr()`).
 
-## Known limitations / TODOs
-- `openpgp-bridge.js` decryption: PKESK packet field access depends on openpgp.js v6 internals — verify with real encrypted mail in T2.4
-- Signing in `encryptMessage()` not yet implemented (Phase 3)
-- `test-sign.js` outputs raw signature only — full OpenPGP signed message wrapping is Phase 3
-- Fingerprint in `test-decrypt.js` requires `--cert` argument — store alongside kid in production
+## HSM token scopes
+| Operation | Scope |
+|---|---|
+| List / search keys | `keymgmt:list` |
+| Generate key pair | `keymgmt:gen` |
+| Import public key | `keymgmt:imp` |
+| Sign / verify / ECDH / getPubKey | `keymgmt:use:<KID>` (per key) |
+
+## Known limitations / pending work
+- WKD Publish not in browser tester (requires server-side auth — will be done in Carbonio plugin)
+- `decryptAndVerifyHSM` for embedded sigs uses `sigPkt.signatureData` (openpgp.js v6 internal) — verify still works but may need adjustment on openpgp.js upgrade
+- hem-sdk.js `searchKeys`: offset/limit path params not yet wired (TODO in SDK)
+- `keyId8` stability: `buildCertificate` must be called with `timestamp: 0` so the keyId is deterministic; production code should cache it after first keygen
 
 ## HEM SDK methods used (hem-sdk.js)
 | Method | Used in |

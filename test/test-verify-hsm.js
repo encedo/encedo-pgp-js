@@ -18,7 +18,7 @@
 
 import { HEM } from '../../hem-sdk-js/hem-sdk.js';
 import { verifySignedMessageHSM } from '../src/openpgp-bridge.js';
-import { DESCR, decodeDescr } from '../src/keychain.js';
+import { DESCR, decodeDescr, findSelfSign, findPeerSign } from '../src/keychain.js';
 import { parseArgs } from './util.js';
 import fs from 'node:fs';
 import readline from 'node:readline';
@@ -61,11 +61,11 @@ await hem.hemCheckin();
 
 // Find sign key — check selfSign first, then peerSign
 const listToken = await hem.authorizePassword(password, 'keymgmt:list');
-const selfKeys = await hem.searchKeys(listToken, DESCR.selfSign(email));
-let signKey = selfKeys.find(k => decodeDescr(k.description) === DESCR.selfSign(email));
+const selfKeys = await hem.searchKeys(listToken, DESCR.selfAll(email));
+let signKey = findSelfSign(selfKeys, email);
 if (!signKey) {
-  const peerKeys = await hem.searchKeys(listToken, DESCR.peerSign(email));
-  signKey = peerKeys.find(k => decodeDescr(k.description) === DESCR.peerSign(email));
+  const peerKeys = await hem.searchKeys(listToken, DESCR.peerAll(email));
+  signKey = findPeerSign(peerKeys, email);
 }
 if (!signKey) {
   console.error(`No sign key found in HSM for ${email}`);

@@ -16,7 +16,7 @@
 
 import { HEM } from '../../hem-sdk-js/hem-sdk.js';
 import { decryptMessage } from '../src/openpgp-bridge.js';
-import { DESCR, decodeDescr } from '../src/keychain.js';
+import { DESCR, decodeDescr, findSelfEcdh } from '../src/keychain.js';
 import { lookupKey } from '../src/wkd-client.js';
 import { parseArgs, prompt } from './util.js';
 import fs from 'node:fs';
@@ -37,8 +37,8 @@ await hem.hemCheckin();
 const listToken = await hem.authorizePassword(password, 'keymgmt:list');
 
 // Find our ECDH key by DESCR
-const keys = await hem.searchKeys(listToken, DESCR.selfEcdh(email));
-const ecdhKey = keys.find(k => decodeDescr(k.description) === DESCR.selfEcdh(email));
+const keys = await hem.searchKeys(listToken, DESCR.selfAll(email));
+const ecdhKey = findSelfEcdh(keys, email);
 if (!ecdhKey) {
   console.error(`No ECDH key found for ${email} — run test-keygen.js first`);
   process.exit(1);

@@ -23,17 +23,20 @@ await hem.hemCheckin();  // fast-fail before asking for password
 
 const password = args.password ?? await prompt('HSM password: ');
 
-const listToken = await hem.authorizePassword(password, 'keymgmt:list');
+// Record creation timestamp — baked into cert fingerprint/keyId
+const iat = Math.floor(Date.now() / 1000);
+console.error(`iat = ${iat}  (${new Date(iat * 1000).toISOString()})`);
+
 const genToken  = await hem.authorizePassword(password, 'keymgmt:gen');
 
 // Generate Ed25519 signing key
-const signDescrPlain = DESCR.selfSign(email);
+const signDescrPlain = DESCR.selfSign(email, iat);
 const signDescrB64   = encodeDescr(signDescrPlain);
 const { kid: kid_sign } = await hem.createKeyPair(genToken, `pgp-sign-${email}`, 'ED25519', signDescrB64);
 console.error(`kid_sign = ${kid_sign}`);
 
 // Generate X25519 ECDH key
-const ecdhDescrPlain = DESCR.selfEcdh(email);
+const ecdhDescrPlain = DESCR.selfEcdh(email, iat);
 const ecdhDescrB64   = encodeDescr(ecdhDescrPlain);
 const { kid: kid_ecdh } = await hem.createKeyPair(genToken, `pgp-ecdh-${email}`, 'CURVE25519', ecdhDescrB64);
 console.error(`kid_ecdh = ${kid_ecdh}`);
@@ -42,8 +45,8 @@ console.error(`kid_ecdh = ${kid_ecdh}`);
 const useToken     = await hem.authorizePassword(password, `keymgmt:use:${kid_sign}`);
 const useEcdhToken = await hem.authorizePassword(password, `keymgmt:use:${kid_ecdh}`);
 
-// Build and output the certificate
-const { cert, fingerprint, keyId } = await buildCertificate(hem, useToken, kid_sign, kid_ecdh, email, { ecdhToken: useEcdhToken });
+// Build and output the certificate using keygen timestamp
+const { cert, fingerprint, keyId } = await buildCertificate(hem, useToken, kid_sign, kid_ecdh, email, { ecdhToken: useEcdhToken, timestamp: iat });
 const armored = armorCertificate(cert);
 
 console.log(armored);
