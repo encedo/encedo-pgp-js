@@ -7,7 +7,7 @@
  * RFC: https://datatracker.ietf.org/doc/draft-koch-openpgp-webkey-service/
  */
 
-import crypto from 'node:crypto';
+import { sha1 } from './runtime/index.js';
 
 // ---------------------------------------------------------------------------
 // Hash
@@ -17,9 +17,9 @@ import crypto from 'node:crypto';
  * Compute the WKD Z-Base-32 hash for the local part of an email address.
  * Must match the server-side wkd.py implementation.
  */
-export function wkdHash(localPart) {
-  const sha1 = crypto.createHash('sha1').update(localPart.toLowerCase()).digest();
-  return zbase32(sha1);
+export async function wkdHash(localPart) {
+  const hashBytes = await sha1(new TextEncoder().encode(localPart.toLowerCase()));
+  return zbase32(hashBytes);
 }
 
 const ZBASE32 = 'ybndrfg8ejkmcpqxot1uwisza345h769';
@@ -51,7 +51,7 @@ function zbase32(bytes) {
  */
 export async function lookupKey(email) {
   const [local, domain] = email.split('@');
-  const hash = wkdHash(local);
+  const hash = await wkdHash(local);
 
   // Advanced method: openpgpkey.<domain> with domain path
   try {

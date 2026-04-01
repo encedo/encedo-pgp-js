@@ -18,7 +18,7 @@
  *   draft-koch-eddsa-for-openpgp — EdDSA in OpenPGP
  */
 
-import crypto from 'node:crypto';
+import { sha1, sha256 } from './runtime/index.js';
 
 // ---------------------------------------------------------------------------
 // OIDs
@@ -148,18 +148,18 @@ const KEY_FLAG_ENCRYPT   = 0x0C;
  * Compute the 8-byte key ID from a v4 public key packet body.
  * Key ID = last 8 bytes of SHA-1 fingerprint.
  */
-function computeKeyId(keyBody) {
+async function computeKeyId(keyBody) {
   const header = concat(new Uint8Array([0x99]), u16be(keyBody.length));
-  const fingerprint = crypto.createHash('sha1').update(concat(header, keyBody)).digest();
+  const fingerprint = await sha1(concat(header, keyBody));
   return fingerprint.slice(12); // last 8 bytes
 }
 
 /**
  * Compute 20-byte SHA-1 fingerprint from a v4 public key packet body.
  */
-function computeFingerprint(keyBody) {
+async function computeFingerprint(keyBody) {
   const header = concat(new Uint8Array([0x99]), u16be(keyBody.length));
-  return new Uint8Array(crypto.createHash('sha1').update(concat(header, keyBody)).digest());
+  return await sha1(concat(header, keyBody));
 }
 
 // ---------------------------------------------------------------------------
@@ -242,16 +242,11 @@ function sigTrailer(hashPrefix) {
  *      + 0xB4 || 4-byte-len || uidBody
  *      + hashPrefix + trailer
  */
-function hashUidCertification(primaryKeyBody, uidBody, hashPrefix) {
+async function hashUidCertification(primaryKeyBody, uidBody, hashPrefix) {
   const keyOctet  = concat(new Uint8Array([0x99]), u16be(primaryKeyBody.length), primaryKeyBody);
   const uidOctet  = concat(new Uint8Array([0xb4]), u32be(uidBody.length), uidBody);
   const trailer   = sigTrailer(hashPrefix);
-  return crypto.createHash('sha256')
-    .update(keyOctet)
-    .update(uidOctet)
-    .update(hashPrefix)
-    .update(trailer)
-    .digest();
+  return await sha256(concat(keyOctet, uidOctet, hashPrefix, trailer));
 }
 
 /**
@@ -261,16 +256,11 @@ function hashUidCertification(primaryKeyBody, uidBody, hashPrefix) {
  *      + 0x99 || 2-byte-len || subkeyBody
  *      + hashPrefix + trailer
  */
-function hashSubkeyBinding(primaryKeyBody, subkeyBody, hashPrefix) {
+async function hashSubkeyBinding(primaryKeyBody, subkeyBody, hashPrefix) {
   const keyOctet    = concat(new Uint8Array([0x99]), u16be(primaryKeyBody.length), primaryKeyBody);
   const subkeyOctet = concat(new Uint8Array([0x99]), u16be(subkeyBody.length), subkeyBody);
   const trailer     = sigTrailer(hashPrefix);
-  return crypto.createHash('sha256')
-    .update(keyOctet)
-    .update(subkeyOctet)
-    .update(hashPrefix)
-    .update(trailer)
-    .digest();
+  return await sha256(concat(keyOctet, subkeyOctet, hashPrefix, trailer));
 }
 
 /**
@@ -307,6 +297,62 @@ function buildSigPacketBody(sigType, hashedSubpkts, unhashedSubpkts, hashLeft2, 
  *   fingerprint — 20-byte SHA-1 fingerprint of primary key
  *   keyId       — 8-byte key ID of primary key
  */
+// ---------------------------------------------------------------------------
+// Cleartext signed message
+// ---------------------------------------------------------------------------
+
+/** Normalize text for cleartext signing: strip trailing whitespace, CRLF line endings */
+function canonicalizeText(text) {
+  return text
+    .split('\n')
+    .map(line => line.replace(/\r$/, '').replace(/[ \t]+$/, ''))
+    .join('\r\n');
+}
+
+/**
+ * Sign a message as OpenPGP cleartext signed message.
+ *
+ * @param {object}     hem       HEM instance
+ * @param {string}     token     JWT with keymgmt:use:<kid_sign> scope
+ * @param {string}     kid_sign  Ed25519 key ID in HSM
+ * @param {Uint8Array} keyId8    8-byte OpenPGP key ID of the signing key
+ * @param {string}     message   Plaintext message to sign
+ * @returns {Promise<string>}  ASCII-armored cleartext signed message
+ */
+export async function signCleartextMessage(hem, token, kid_sign, keyId8, message) {
+  const ts = Math.floor(Date.now() / 1000);
+
+  const canonical = canonicalizeText(message);
+  const msgBytes  = new TextEncoder().encode(canonical);
+
+  const hashedSubpkts = sigCreationTime(ts);
+  const hashPrefix    = sigHashPrefix(0x01, 22, 8, hashedSubpkts); // 0x01 = canonical text
+  const trailer       = sigTrailer(hashPrefix);
+
+  const hash  = await sha256(concat(msgBytes, hashPrefix, trailer));
+  const sig64 = await hem.exdsaSignBytes(token, kid_sign, hash, 'Ed25519');
+
+  const unhashedSubpkts = issuerSubpkt(keyId8);
+  const sigBody = buildSigPacketBody(
+    0x01, hashedSubpkts, unhashedSubpkts,
+    hash.slice(0, 2),
+    encodeEddsaSignatureMPIs(sig64),
+  );
+  const sigPkt = packet(2, sigBody);
+
+  // Dash-escape lines starting with '-'
+  const escaped = message.split('\n')
+    .map(line => line.startsWith('-') ? '- ' + line : line)
+    .join('\n');
+
+  const b64    = btoa(String.fromCharCode(...sigPkt));
+  const lines  = b64.match(/.{1,76}/g).join('\n');
+  const crc    = computeCrc24(sigPkt);
+  const crcB64 = btoa(String.fromCharCode((crc >> 16) & 0xFF, (crc >> 8) & 0xFF, crc & 0xFF));
+
+  return `-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n${escaped}\n-----BEGIN PGP SIGNATURE-----\n\n${lines}\n=${crcB64}\n-----END PGP SIGNATURE-----\n`;
+}
+
 export async function buildCertificate(hem, token, kid_sign, kid_ecdh, email, opts = {}) {
   const ts = opts.timestamp ?? Math.floor(Date.now() / 1000);
   const uid = email;
@@ -327,8 +373,8 @@ export async function buildCertificate(hem, token, kid_sign, kid_ecdh, email, op
   const uidBody        = buildUidBody(uid);
 
   // 3. Compute key ID (needed in unhashed subpackets)
-  const keyId = computeKeyId(primaryKeyBody);
-  const fingerprint = computeFingerprint(primaryKeyBody);
+  const keyId = await computeKeyId(primaryKeyBody);
+  const fingerprint = await computeFingerprint(primaryKeyBody);
 
   // 4. Build UID certification signature (type 0x13)
   const certHashedSubpkts = concat(
@@ -340,7 +386,7 @@ export async function buildCertificate(hem, token, kid_sign, kid_ecdh, email, op
     featuresSubpkt(),
   );
   const certHashPrefix = sigHashPrefix(0x13, 22, 8, certHashedSubpkts);
-  const certHash = hashUidCertification(primaryKeyBody, uidBody, certHashPrefix);
+  const certHash = await hashUidCertification(primaryKeyBody, uidBody, certHashPrefix);
   const certSig64 = await hem.exdsaSignBytes(token, kid_sign, certHash, 'Ed25519');
   // Ed25519ph = pre-hashed variant (we pass the SHA-256 hash of the data to the HSM)
   const certUnhashedSubpkts = issuerSubpkt(keyId);
@@ -358,7 +404,7 @@ export async function buildCertificate(hem, token, kid_sign, kid_ecdh, email, op
     keyFlagsSubpkt(KEY_FLAG_ENCRYPT),
   );
   const subkeyHashPrefix = sigHashPrefix(0x18, 22, 8, subkeyHashedSubpkts);
-  const subkeyHash = hashSubkeyBinding(primaryKeyBody, subkeyBody, subkeyHashPrefix);
+  const subkeyHash = await hashSubkeyBinding(primaryKeyBody, subkeyBody, subkeyHashPrefix);
   const subkeySig64 = await hem.exdsaSignBytes(token, kid_sign, subkeyHash, 'Ed25519');
   const subkeyUnhashedSubpkts = issuerSubpkt(keyId);
   const subkeySigBody = buildSigPacketBody(

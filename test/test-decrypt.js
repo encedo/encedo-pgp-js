@@ -17,9 +17,10 @@
 import { HEM } from '../../hem-sdk-js/hem-sdk.js';
 import { decryptMessage } from '../src/openpgp-bridge.js';
 import { DESCR, decodeDescr } from '../src/keychain.js';
+import { lookupKey } from '../src/wkd-client.js';
 import { parseArgs, prompt } from './util.js';
 import fs from 'node:fs';
-import crypto from 'node:crypto';
+import * as openpgp from 'openpgp';
 
 const args     = parseArgs(process.argv.slice(2));
 const hsmUrl   = args.hsm   ?? 'https://my.ence.do';
@@ -50,26 +51,21 @@ const useToken = await hem.authorizePassword(password, `keymgmt:use:${ecdhKey.ki
 const pubInfo = await hem.getPubKey(useToken, ecdhKey.kid);
 const pubkey32 = fromB64(pubInfo.pubkey);
 
-// Build a minimal key body to compute fingerprint
-// (Same logic as cert-builder.js — timestamp is unknown here, but fingerprint
-//  is baked into the cert; for decryption we need the subkey fingerprint from the cert)
-// TODO: store fingerprint alongside kid in keychain (or query from published cert)
-// For now, read the armored cert if passed via --cert, or derive from stored data.
+// Get subkey fingerprint from WKD cert (or --cert file)
 let fingerprint;
 if (args.cert) {
   const certData = fs.readFileSync(args.cert, 'utf8');
-  const { keys: [key] } = await import('openpgp').then(m =>
-    m.readKey({ armoredKey: certData }).then(k => ({ keys: [k] }))
-  );
-  // Find the X25519 subkey fingerprint
+  const key = await openpgp.readKey({ armoredKey: certData });
   const subkeys = key.getSubkeys();
-  fingerprint = subkeys[0]?.getFingerprint ? fromHex(subkeys[0].getFingerprint()) : null;
-  console.error(`Subkey fingerprint (from cert): ${Buffer.from(fingerprint).toString('hex').toUpperCase()}`);
+  fingerprint = fromHex(subkeys[0].getFingerprint());
+  console.error(`Subkey fingerprint (from cert file): ${Buffer.from(fingerprint).toString('hex').toUpperCase()}`);
 } else {
-  console.warn('No --cert provided; fingerprint derivation may be inaccurate. Use --cert path/to/pubkey.asc');
-  // Placeholder: compute fingerprint from a fake timestamp=0 cert body
-  // This is only correct if the key was generated with timestamp=0 — for testing only
-  fingerprint = new Uint8Array(20);
+  const keyBytes = await lookupKey(email);
+  if (!keyBytes) { console.error(`No WKD key found for ${email} — use --cert path/to/pubkey.asc`); process.exit(1); }
+  const key = await openpgp.readKey({ binaryKey: keyBytes });
+  const subkeys = key.getSubkeys();
+  fingerprint = fromHex(subkeys[0].getFingerprint());
+  console.error(`Subkey fingerprint (from WKD): ${Buffer.from(fingerprint).toString('hex').toUpperCase()}`);
 }
 
 // Read the encrypted message

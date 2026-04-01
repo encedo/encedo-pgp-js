@@ -10,15 +10,45 @@
  */
 
 import * as openpgp from 'openpgp';
-import crypto from 'node:crypto';
 import { lookupKey } from './wkd-client.js';
+import { aes256KeyUnwrap, sha256 } from './runtime/index.js';
+import { DESCR, encodeDescr } from './keychain.js';
 
 // OID for curve25519 (X25519) in OpenPGP — must match cert-builder.js
 const OID_X25519 = new Uint8Array([0x2b, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01]);
 
 // ---------------------------------------------------------------------------
-// Encryption
+// Encrypt using recipient public key stored in HSM
 // ---------------------------------------------------------------------------
+
+/**
+ * Encrypt a message to a recipient whose OpenPGP keys are stored in the HSM.
+ * Rebuilds the recipient's OpenPGP certificate from HSM key material (sign + ecdh),
+ * so no WKD lookup is needed — the HSM is the source of trust.
+ *
+ * Required scopes:
+ *   signToken  — keymgmt:use:<kid_sign>  (to rebuild self-signed cert)
+ *   ecdhToken  — keymgmt:use:<kid_ecdh>
+ *
+ * @param {object} hem        HEM instance
+ * @param {string} signToken  JWT for sign key use
+ * @param {string} ecdhToken  JWT for ECDH key use
+ * @param {string} kid_sign   Ed25519 key ID in HSM
+ * @param {string} kid_ecdh   X25519 key ID in HSM
+ * @param {string} email      Recipient email (used for UID in cert)
+ * @param {string} plaintext  Message to encrypt
+ * @returns {Promise<string>} ASCII-armored encrypted message
+ */
+export async function encryptMessageHSM(hem, signToken, ecdhToken, kid_sign, kid_ecdh, email, plaintext) {
+  const { buildCertificate } = await import('./cert-builder.js');
+  const { cert } = await buildCertificate(hem, signToken, kid_sign, kid_ecdh, email, { ecdhToken });
+  const pubKey  = await openpgp.readKey({ binaryKey: cert });
+  const message = await openpgp.createMessage({ text: plaintext });
+  return openpgp.encrypt({ message, encryptionKeys: pubKey });
+}
+
+// ---------------------------------------------------------------------------
+// Encrypt using recipient public key fetched from WKD (local WebCrypto)
 
 /**
  * Encrypt a plaintext message to one or more recipients.
@@ -176,7 +206,7 @@ async function rfc6637kdf(Z, hashId, symId, fingerprint, curveOID, keyLen) {
   const sender   = new TextEncoder().encode('Anonymous Sender    '); // exactly 20 bytes
 
   const data = concat(counter, Z, oidLen, curveOID, algoId, kdfField, sender, fingerprint);
-  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+  const hash = await sha256(data);
   return hash.slice(0, keyLen);
 }
 
@@ -189,15 +219,7 @@ async function rfc6637kdf(Z, hashId, symId, fingerprint, curveOID, keyLen) {
  * Returns the unwrapped session key bytes (with PKCS#5 padding stripped).
  */
 async function aesKeyUnwrap(kwk, wrappedKey, _symAlgoId) {
-  // AES-256 Key Unwrap per RFC 3394.
-  // Uses Node.js crypto 'id-aes256-wrap' — for browser compatibility this needs to be replaced.
-  // TODO: implement pure WebCrypto fallback for browser use.
-  const { createDecipheriv } = await import('node:crypto');
-  const IV = Buffer.from('A6A6A6A6A6A6A6A6', 'hex');
-  const decipher = createDecipheriv('id-aes256-wrap', Buffer.from(kwk), IV);
-  // Do NOT call setAutoPadding() — not supported on wrap ciphers.
-  // Do NOT call decipher.final() — wrap cipher produces all output in update().
-  const plaintext = new Uint8Array(decipher.update(Buffer.from(wrappedKey)));
+  const plaintext = await aes256KeyUnwrap(kwk, wrappedKey);
   return stripPkcs5(plaintext);
 }
 
@@ -230,4 +252,151 @@ function concat(...arrays) {
 
 function toB64(bytes) {
   return btoa(String.fromCharCode(...bytes));
+}
+
+// ---------------------------------------------------------------------------
+// Verify cleartext signed message (local openpgp.js)
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify an ASCII-armored OpenPGP cleartext signed message.
+ *
+ * @param {string} armoredSigned  -----BEGIN PGP SIGNED MESSAGE----- ...
+ * @param {string} armoredPubKey  -----BEGIN PGP PUBLIC KEY BLOCK----- ...
+ * @returns {Promise<{ valid: boolean, keyID: string }>}
+ */
+export async function verifySignedMessage(armoredSigned, armoredPubKey) {
+  const message   = await openpgp.readCleartextMessage({ cleartextMessage: armoredSigned });
+  const publicKey = await openpgp.readKey({ armoredKey: armoredPubKey });
+  const result    = await openpgp.verify({ message, verificationKeys: [publicKey] });
+  const sig       = result.signatures[0];
+  if (!sig) throw new Error('No signature found in message');
+  await sig.verified; // throws if signature is invalid
+  return { valid: true, keyID: sig.keyID.toHex().toUpperCase() };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for HSM-based verify
+// ---------------------------------------------------------------------------
+
+function canonicalizeCleartext(text) {
+  return text
+    .split('\n')
+    .map(l => l.replace(/\r$/, '').replace(/[ \t]+$/, ''))
+    .join('\r\n');
+}
+
+/** Parse armored cleartext message into { text, sigBinary }. */
+function parseCleartextArmored(armored) {
+  const lines = armored.replace(/\r\n/g, '\n').split('\n');
+  let i = 1;
+  while (i < lines.length && lines[i] !== '') i++;
+  i++; // skip blank line after headers
+  const bodyLines = [];
+  while (i < lines.length && !lines[i].startsWith('-----BEGIN PGP SIGNATURE-----')) {
+    const l = lines[i++];
+    bodyLines.push(l.startsWith('- ') ? l.slice(2) : l);
+  }
+  i += 2; // skip sig marker + blank line
+  let b64 = '';
+  while (i < lines.length && !lines[i].startsWith('=') && !lines[i].startsWith('-----')) {
+    b64 += lines[i++];
+  }
+  return { text: bodyLines.join('\n'), sigBinary: Uint8Array.from(atob(b64), c => c.charCodeAt(0)) };
+}
+
+/** Parse new-format OpenPGP sig packet; return { signatureData (hashPrefix), sig64 }. */
+function parseSigPacketForVerify(data) {
+  let off = 1; // skip tag byte (0xC2)
+  const fb = data[off++];
+  let bodyLen;
+  if (fb < 192) {
+    bodyLen = fb;
+  } else if (fb < 224) {
+    bodyLen = ((fb - 192) << 8) + data[off++] + 192;
+  } else {
+    bodyLen = (data[off] << 24) | (data[off+1] << 16) | (data[off+2] << 8) | data[off+3];
+    off += 4;
+  }
+  const body = data.slice(off, off + bodyLen);
+  // body: [ver=4, sigType, pkAlgo=22, hashAlgo=8, hashedLen(2), ...hashed, unhashedLen(2), ...unhashed, hashLeft2(2), ...MPIs]
+  const hashedLen = (body[4] << 8) | body[5];
+  const signatureData = body.slice(0, 6 + hashedLen); // the "hashPrefix"
+  let pos = 6 + hashedLen;
+  const unhashedLen = (body[pos] << 8) | body[pos + 1];
+  pos += 2 + unhashedLen + 2; // skip unhashed subpkts + hashLeft2
+  // R MPI
+  const rBits = (body[pos] << 8) | body[pos + 1]; pos += 2;
+  const rData = body.slice(pos, pos + Math.ceil(rBits / 8)); pos += rData.length;
+  // S MPI
+  const sBits = (body[pos] << 8) | body[pos + 1]; pos += 2;
+  const sData = body.slice(pos, pos + Math.ceil(sBits / 8));
+  // Reconstruct 64-byte sig (left-pad each to 32 bytes)
+  const sig64 = new Uint8Array(64);
+  sig64.set(rData, 32 - rData.length);
+  sig64.set(sData, 64 - sData.length);
+  return { signatureData, sig64 };
+}
+
+// ---------------------------------------------------------------------------
+// Verify cleartext signed message via HSM (uses imported public key in HSM)
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify an ASCII-armored OpenPGP cleartext signed message using the HSM.
+ * The signer's public key must have been previously imported via importKeyFromWKD().
+ *
+ * Required scope: 'keymgmt:use:<kid>'
+ *
+ * @param {object} hem            HEM instance
+ * @param {string} token          JWT with keymgmt:use:<kid> scope
+ * @param {string} kid            KID of the imported public key in HSM
+ * @param {string} armoredSigned  -----BEGIN PGP SIGNED MESSAGE----- ...
+ * @returns {Promise<true>}  Resolves on success, throws on invalid signature (HTTP 406)
+ */
+export async function verifySignedMessageHSM(hem, token, kid, armoredSigned) {
+  const { text, sigBinary }      = parseCleartextArmored(armoredSigned);
+  const { signatureData, sig64 } = parseSigPacketForVerify(sigBinary);
+  const canonical  = canonicalizeCleartext(text);
+  const msgBytes   = new TextEncoder().encode(canonical);
+  const len        = signatureData.length;
+  const trailer    = new Uint8Array([0x04, 0xFF, (len>>>24)&0xFF, (len>>>16)&0xFF, (len>>>8)&0xFF, len&0xFF]);
+  const hash       = await sha256(concat(msgBytes, signatureData, trailer));
+  return hem.exdsaVerify(token, kid, hash, sig64, 'Ed25519');
+}
+
+// ---------------------------------------------------------------------------
+// Import WKD key into HSM
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch a public key from WKD and import both Ed25519 (sign) and X25519 (ecdh) keys
+ * into the HSM with proper DESCR tags (DESCR.peerSign / DESCR.peerEcdh).
+ *
+ * Required scope: 'keymgmt:imp'
+ *
+ * @param {object} hem    HEM instance
+ * @param {string} token  JWT with keymgmt:imp scope
+ * @param {string} email  Email address for WKD lookup
+ * @returns {Promise<{kidSign: string, kidEcdh: string}>}
+ */
+export async function importKeyFromWKD(hem, token, email) {
+  const keyBytes = await lookupKey(email);
+  if (!keyBytes) throw new Error(`No WKD key found for ${email}`);
+  const pubKey = await openpgp.readKey({ binaryKey: keyBytes });
+
+  // Primary key — Ed25519 sign
+  const signRaw32   = stripNativePrefix(pubKey.keyPacket.publicParams.Q);
+  const signDescr   = encodeDescr(DESCR.peerSign(email));
+  const { kid: kidSign } = await hem.importPublicKey(token, email.slice(0, 32), 'ED25519', signRaw32, signDescr);
+
+  // Subkey — X25519 ECDH
+  const subkeys = pubKey.getSubkeys();
+  const ecdhSubkey = subkeys.find(sk => sk.keyPacket?.publicParams?.Q);
+  if (!ecdhSubkey) throw new Error(`No X25519 subkey found for ${email}`);
+  const ecdhRaw32  = stripNativePrefix(ecdhSubkey.keyPacket.publicParams.Q);
+  const ecdhDescr  = encodeDescr(DESCR.peerEcdh(email));
+  const { kid: kidEcdh } = await hem.importPublicKey(token, `${email.slice(0, 28)}/E`, 'CURVE25519', ecdhRaw32, ecdhDescr);
+
+  return { kidSign, kidEcdh };
 }

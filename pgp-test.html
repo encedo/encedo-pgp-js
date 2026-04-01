@@ -1,0 +1,1255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Encedo PGP — Test Console</title>
+    <script type="importmap">
+    {
+      "imports": {
+        "openpgp": "https://unpkg.com/openpgp@6/dist/openpgp.min.mjs"
+      }
+    }
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg:        #080a0d;
+            --bg2:       #0e1117;
+            --bg3:       #141820;
+            --border:    #1e2530;
+            --border2:   #2a3340;
+            --accent:    #7C35F0;
+            --accent2:   #5a22c4;
+            --accent-lo: rgba(124, 53, 240, 0.08);
+            --accent-md: rgba(124, 53, 240, 0.18);
+            --green:     #22c55e;
+            --green-lo:  rgba(34, 197, 94, 0.08);
+            --red:       #ef4444;
+            --red-lo:    rgba(239, 68, 68, 0.08);
+            --yellow:    #eab308;
+            --text:      #e2e8f0;
+            --text2:     #94a3b8;
+            --text3:     #4a5568;
+            --mono:      'IBM Plex Mono', monospace;
+            --sans:      'IBM Plex Sans', sans-serif;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--sans);
+            font-size: 13px;
+            line-height: 1.5;
+            min-height: 100vh;
+            display: grid;
+            grid-template-columns: 260px 1fr;
+            grid-template-rows: 48px 1fr;
+        }
+
+        /* ── HEADER ── */
+        header {
+            grid-column: 1 / -1;
+            background: var(--bg2);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            gap: 16px;
+        }
+
+        .logo {
+            font-family: var(--mono);
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--accent);
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+        }
+
+        .logo-sep {
+            width: 1px;
+            height: 16px;
+            background: var(--border2);
+        }
+
+        .logo-sub {
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text3);
+            letter-spacing: 0.06em;
+        }
+
+        .header-status {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text3);
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--text3);
+        }
+
+        .status-dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+        .status-dot.error     { background: var(--red); }
+
+        /* ── SIDEBAR ── */
+        nav {
+            background: var(--bg2);
+            border-right: 1px solid var(--border);
+            padding: 16px 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .nav-section {
+            padding: 12px 16px 4px;
+            font-family: var(--mono);
+            font-size: 9px;
+            letter-spacing: 0.14em;
+            color: var(--text3);
+            text-transform: uppercase;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 16px;
+            cursor: pointer;
+            color: var(--text2);
+            font-size: 12px;
+            border-left: 2px solid transparent;
+            transition: all 0.15s;
+            user-select: none;
+        }
+
+        .nav-item:hover {
+            background: var(--accent-lo);
+            color: var(--text);
+        }
+
+        .nav-item.active {
+            background: var(--accent-lo);
+            color: var(--accent);
+            border-left-color: var(--accent);
+        }
+
+        .nav-icon {
+            font-size: 14px;
+            width: 18px;
+            text-align: center;
+            opacity: 0.7;
+        }
+
+        .nav-item.active .nav-icon { opacity: 1; }
+
+        /* ── MAIN ── */
+        main {
+            overflow-y: auto;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        /* ── PANEL ── */
+        .panel {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--bg3);
+        }
+
+        .panel-title {
+            font-family: var(--mono);
+            font-size: 11px;
+            font-weight: 500;
+            letter-spacing: 0.08em;
+            color: var(--text2);
+            text-transform: uppercase;
+            flex: 1;
+        }
+
+        .panel-badge {
+            font-family: var(--mono);
+            font-size: 9px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: var(--accent-md);
+            color: var(--accent);
+            letter-spacing: 0.06em;
+        }
+
+        .panel-badge.ok  { background: var(--green-lo); color: var(--green); }
+        .panel-badge.err { background: var(--red-lo); color: var(--red); }
+
+        .panel-body {
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        /* ── AUTH PANEL special ── */
+        .auth-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr auto;
+            gap: 10px;
+            align-items: end;
+        }
+
+        /* ── FORM ELEMENTS ── */
+        .field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        label {
+            font-family: var(--mono);
+            font-size: 10px;
+            letter-spacing: 0.08em;
+            color: var(--text3);
+            text-transform: uppercase;
+        }
+
+        input, textarea, select {
+            background: var(--bg);
+            border: 1px solid var(--border2);
+            border-radius: 4px;
+            color: var(--text);
+            font-family: var(--mono);
+            font-size: 12px;
+            padding: 8px 10px;
+            outline: none;
+            transition: border-color 0.15s;
+            width: 100%;
+        }
+
+        input:focus, textarea:focus, select:focus {
+            border-color: var(--accent);
+        }
+
+        input::placeholder, textarea::placeholder {
+            color: var(--text3);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+            line-height: 1.6;
+        }
+
+        textarea.tall { min-height: 160px; }
+
+        /* ── BUTTONS ── */
+        .btn {
+            font-family: var(--mono);
+            font-size: 11px;
+            font-weight: 500;
+            letter-spacing: 0.06em;
+            padding: 8px 16px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+            text-transform: uppercase;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .btn-primary:hover { background: var(--accent2); }
+
+        .btn-ghost {
+            background: transparent;
+            color: var(--text2);
+            border: 1px solid var(--border2);
+        }
+
+        .btn-ghost:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .btn-danger {
+            background: transparent;
+            color: var(--red);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+        }
+
+        .btn-danger:hover { background: var(--red-lo); }
+
+        .btn:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+
+        /* ── ROW ── */
+        .row {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+
+        .row .field { flex: 1; }
+
+        /* ── OUTPUT BLOCK ── */
+        .output {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 10px 12px;
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text2);
+            min-height: 60px;
+            word-break: break-all;
+            line-height: 1.7;
+            white-space: pre-wrap;
+        }
+
+        .output.success {
+            border-color: rgba(34, 197, 94, 0.3);
+            color: var(--green);
+        }
+
+        .output.error {
+            border-color: rgba(239, 68, 68, 0.3);
+            color: var(--red);
+        }
+
+        .output-label {
+            font-family: var(--mono);
+            font-size: 9px;
+            letter-spacing: 0.1em;
+            color: var(--text3);
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        /* ── KEY LIST ── */
+        .key-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .key-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+        }
+
+        .key-algo {
+            font-family: var(--mono);
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            background: var(--accent-md);
+            color: var(--accent);
+            flex-shrink: 0;
+        }
+
+        .key-algo.ecdh { background: rgba(34, 197, 94, 0.1); color: var(--green); }
+
+        .key-descr {
+            font-family: var(--mono);
+            font-size: 11px;
+            color: var(--text2);
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .key-kid {
+            font-family: var(--mono);
+            font-size: 10px;
+            color: var(--text3);
+            flex-shrink: 0;
+        }
+
+        /* ── DIVIDER ── */
+        .divider {
+            height: 1px;
+            background: var(--border);
+            margin: 4px 0;
+        }
+
+        /* ── RESULT TAG ── */
+        .result-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-family: var(--mono);
+            font-size: 11px;
+            padding: 4px 10px;
+            border-radius: 3px;
+        }
+
+        .result-tag.valid   { background: var(--green-lo); color: var(--green); }
+        .result-tag.invalid { background: var(--red-lo); color: var(--red); }
+
+        /* ── SECTION hidden ── */
+        .section { display: none; }
+        .section.active { display: contents; }
+
+        /* ── COPY BTN ── */
+        .output-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 6px;
+            margin-top: 6px;
+        }
+
+        /* ── SCROLLBAR ── */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+    </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header>
+    <span class="logo">ENCEDO</span>
+    <span class="logo-sep"></span>
+    <span class="logo-sub">PGP TEST CONSOLE</span>
+    <div class="header-status">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">NOT CONNECTED</span>
+    </div>
+</header>
+
+<!-- SIDEBAR -->
+<nav>
+    <div class="nav-section">HSM</div>
+    <div class="nav-item active" data-section="auth">
+        <span class="nav-icon">⬡</span> Auth
+    </div>
+
+    <div class="nav-section">Keys</div>
+    <div class="nav-item" data-section="keygen">
+        <span class="nav-icon">+</span> Generate
+    </div>
+    <div class="nav-item" data-section="keylist">
+        <span class="nav-icon">≡</span> Key List
+    </div>
+    <div class="nav-item" data-section="export">
+        <span class="nav-icon">↑</span> Export
+    </div>
+
+    <div class="nav-section">Operations</div>
+    <div class="nav-item" data-section="sign">
+        <span class="nav-icon">✎</span> Sign
+    </div>
+    <div class="nav-item" data-section="verify">
+        <span class="nav-icon">✓</span> Verify
+    </div>
+    <div class="nav-item" data-section="encrypt">
+        <span class="nav-icon">⊕</span> Encrypt
+    </div>
+    <div class="nav-item" data-section="decrypt">
+        <span class="nav-icon">⊖</span> Decrypt
+    </div>
+
+    <div class="nav-section">WKD</div>
+    <div class="nav-item" data-section="wkd">
+        <span class="nav-icon">⌖</span> Lookup
+    </div>
+</nav>
+
+<!-- MAIN -->
+<main>
+
+    <!-- AUTH -->
+    <div class="panel section active" id="section-auth">
+        <div class="panel-header">
+            <span class="panel-title">HSM Authentication</span>
+            <span class="panel-badge" id="authBadge">DISCONNECTED</span>
+        </div>
+        <div class="panel-body">
+            <div class="auth-grid">
+                <div class="field">
+                    <label>HSM URL</label>
+                    <input type="text" id="hsmUrl" value="https://my.ence.do" placeholder="https://my.ence.do">
+                </div>
+                <div class="field">
+                    <label>Password</label>
+                    <input type="password" id="hsmPassword" placeholder="••••••••••">
+                </div>
+                <button class="btn btn-primary" id="btnAuth">Connect</button>
+            </div>
+            <div class="divider"></div>
+            <div class="output-label">Session</div>
+            <div class="output" id="authOutput">--</div>
+        </div>
+    </div>
+
+    <!-- KEYGEN -->
+    <div class="panel section" id="section-keygen">
+        <div class="panel-header">
+            <span class="panel-title">Generate PGP Keypair</span>
+            <span class="panel-badge">Ed25519 + X25519</span>
+        </div>
+        <div class="panel-body">
+            <div class="row">
+                <div class="field">
+                    <label>Email</label>
+                    <input type="email" id="keygenEmail" placeholder="user@domain.tld">
+                </div>
+                <div class="field" style="max-width:80px">
+                    <label>Slot</label>
+                    <input type="number" id="keygenSlot" value="1" min="1" max="9">
+                </div>
+                <button class="btn btn-primary" id="btnKeygen">Generate</button>
+            </div>
+            <div class="divider"></div>
+            <div class="output-label">Result</div>
+            <div class="output tall" id="keygenOutput">--</div>
+            <div class="output-actions">
+                <button class="btn btn-ghost" id="btnKeygenCopy">Copy Pubkey</button>
+                <button class="btn btn-ghost" id="btnKeygenDownload">Download .asc</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- KEY LIST -->
+    <div class="panel section" id="section-keylist">
+        <div class="panel-header">
+            <span class="panel-title">PGP Keys in HSM</span>
+            <button class="btn btn-ghost" id="btnRefreshKeys" style="padding:4px 10px;font-size:10px">Refresh</button>
+        </div>
+        <div class="panel-body">
+            <div class="key-list" id="keyList">
+                <!-- populated by JS -->
+                <div class="output" style="text-align:center;color:var(--text3)">Connect to HSM first</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- EXPORT -->
+    <div class="panel section" id="section-export">
+        <div class="panel-header">
+            <span class="panel-title">Export Public Key</span>
+        </div>
+        <div class="panel-body">
+            <div class="row">
+                <div class="field">
+                    <label>Email or KID</label>
+                    <input type="text" id="exportEmail" placeholder="user@domain.tld or kid">
+                </div>
+                <button class="btn btn-primary" id="btnExport">Export</button>
+            </div>
+            <div class="divider"></div>
+            <div class="output-label">Public Key (ASCII Armored)</div>
+            <div class="output tall" id="exportOutput">--</div>
+            <div class="output-actions">
+                <button class="btn btn-ghost" id="btnExportCopy">Copy</button>
+                <button class="btn btn-ghost" id="btnExportDownload">Download .asc</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- SIGN -->
+    <div class="panel section" id="section-sign">
+        <div class="panel-header">
+            <span class="panel-title">Sign Message</span>
+            <span class="panel-badge">Ed25519 via HSM</span>
+        </div>
+        <div class="panel-body">
+            <div class="field">
+                <label>Signing Key (email or kid)</label>
+                <input type="text" id="signKey" placeholder="user@domain.tld">
+            </div>
+            <div class="field">
+                <label>Message</label>
+                <textarea id="signMessage" class="tall" placeholder="Message to sign..."></textarea>
+            </div>
+            <button class="btn btn-primary" id="btnSign" style="align-self:flex-start">Sign</button>
+            <div class="divider"></div>
+            <div class="output-label">Signed Message (Armored)</div>
+            <div class="output tall" id="signOutput">--</div>
+            <div class="output-actions">
+                <button class="btn btn-ghost" id="btnSignCopy">Copy</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- VERIFY -->
+    <div class="panel section" id="section-verify">
+        <div class="panel-header">
+            <span class="panel-title">Verify Signature</span>
+            <span class="panel-badge">Local WebCrypto</span>
+        </div>
+        <div class="panel-body">
+            <div class="field">
+                <label>Signed Message (Armored)</label>
+                <textarea id="verifyMessage" class="tall" placeholder="-----BEGIN PGP SIGNED MESSAGE-----..."></textarea>
+            </div>
+            <div class="field">
+                <label>Signer Public Key (Armored)</label>
+                <div class="row" style="margin-bottom:6px">
+                    <input type="email" id="verifyEmail" placeholder="email → WKD lookup" style="flex:1">
+                    <button class="btn btn-ghost" id="btnVerifyFillWkd">Fill from WKD</button>
+                </div>
+                <textarea id="verifyPubkey" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----..."></textarea>
+            </div>
+            <div class="row" style="gap:8px;flex-wrap:wrap">
+                <button class="btn btn-primary" id="btnVerify">Verify (local)</button>
+                <button class="btn btn-secondary" id="btnVerifyHSM">Verify via HSM</button>
+            </div>
+            <div class="divider"></div>
+            <div class="output-label">Result</div>
+            <div class="output" id="verifyOutput">--</div>
+        </div>
+    </div>
+
+    <!-- ENCRYPT -->
+    <div class="panel section" id="section-encrypt">
+        <div class="panel-header">
+            <span class="panel-title">Encrypt Message</span>
+            <span class="panel-badge">Local WebCrypto</span>
+        </div>
+        <div class="panel-body">
+            <div class="row">
+                <div class="field">
+                    <label>Recipient Email (WKD lookup) or paste pubkey below</label>
+                    <input type="email" id="encryptTo" placeholder="recipient@domain.tld">
+                </div>
+                <button class="btn btn-ghost" id="btnWkdLookupEncrypt">WKD Lookup</button>
+            </div>
+            <div class="field">
+                <label>Recipient Public Key (Armored) — filled by WKD or paste manually</label>
+                <textarea id="encryptPubkey" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----..."></textarea>
+            </div>
+            <div class="field">
+                <label>Message</label>
+                <textarea id="encryptMessage" class="tall" placeholder="Message to encrypt..."></textarea>
+            </div>
+            <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+                <button class="btn btn-primary" id="btnEncrypt">Encrypt (local)</button>
+                <button class="btn btn-secondary" id="btnEncryptHSM">Encrypt (via HSM)</button>
+                <label style="text-transform:none;font-size:12px;color:var(--text2)">
+                    <input type="checkbox" id="encryptAndSign" style="width:auto;margin-right:6px">
+                    Also sign (requires HSM)
+                </label>
+            </div>
+            <div class="divider"></div>
+            <div class="output-label">Encrypted Message (Armored)</div>
+            <div class="output tall" id="encryptOutput">--</div>
+            <div class="output-actions">
+                <button class="btn btn-ghost" id="btnEncryptCopy">Copy</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- DECRYPT -->
+    <div class="panel section" id="section-decrypt">
+        <div class="panel-header">
+            <span class="panel-title">Decrypt Message</span>
+            <span class="panel-badge">ECDH via HSM</span>
+        </div>
+        <div class="panel-body">
+            <div class="field">
+                <label>Decryption Key (email or kid) — must be in HSM</label>
+                <input type="text" id="decryptKey" placeholder="user@domain.tld">
+            </div>
+            <div class="field">
+                <label>Encrypted Message (Armored)</label>
+                <textarea id="decryptMessage" class="tall" placeholder="-----BEGIN PGP MESSAGE-----..."></textarea>
+            </div>
+            <button class="btn btn-primary" id="btnDecrypt" style="align-self:flex-start">Decrypt</button>
+            <div class="divider"></div>
+            <div class="output-label">Plaintext</div>
+            <div class="output tall" id="decryptOutput">--</div>
+        </div>
+    </div>
+
+    <!-- WKD -->
+    <div class="panel section" id="section-wkd">
+        <div class="panel-header">
+            <span class="panel-title">WKD — Web Key Directory</span>
+        </div>
+        <div class="panel-body">
+
+            <!-- Lookup -->
+            <div class="output-label">Lookup</div>
+            <div class="row">
+                <div class="field">
+                    <label>Email Address</label>
+                    <input type="email" id="wkdLookupEmail" placeholder="someone@domain.tld">
+                </div>
+                <button class="btn btn-ghost" id="btnWkdLookup">Lookup</button>
+            </div>
+            <div class="output" id="wkdLookupOutput">--</div>
+            <div class="output-actions">
+                <button class="btn btn-ghost" id="btnWkdImport">Import to HSM Keychain</button>
+            </div>
+
+
+        </div>
+    </div>
+
+</main>
+
+<script type="module">
+    import { HEM } from '../../hem-sdk-js/hem-sdk.js';
+    import { decodeDescr } from './src/keychain.js';
+
+    // ── Global state ──────────────────────────────────────────────────────────
+    let hem = null;
+    let hsmPassword = null;
+    let listToken = null;
+
+    // ── Navigation ────────────────────────────────────────────────────────────
+    document.querySelectorAll('.nav-item').forEach(item => {
+        item.addEventListener('click', () => {
+            document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+            document.querySelectorAll('.panel.section').forEach(s => s.classList.remove('active'));
+            item.classList.add('active');
+            const section = item.dataset.section;
+            document.getElementById('section-' + section)?.classList.add('active');
+        });
+    });
+
+    // ── UI helpers ────────────────────────────────────────────────────────────
+    function setStatus(connected, text) {
+        const dot  = document.getElementById('statusDot');
+        const span = document.getElementById('statusText');
+        dot.className  = 'status-dot' + (connected ? ' connected' : ' error');
+        span.textContent = text;
+    }
+
+    function setOutput(id, text, state) {
+        const el = document.getElementById(id);
+        el.textContent = text;
+        el.className = 'output' + (state ? ' ' + state : '');
+    }
+
+    function setBadge(id, text, state) {
+        const el = document.getElementById(id);
+        el.textContent = text;
+        el.className = 'panel-badge' + (state ? ' ' + state : '');
+    }
+
+    // ── Generate Keypair ──────────────────────────────────────────────────────
+    let lastArmoredCert = null;
+    let lastCertBinary   = null;
+
+    document.getElementById('btnKeygen').addEventListener('click', async () => {
+        if (!hem || !hsmPassword) { setOutput('keygenOutput', 'Najpierw połącz z HSM.', 'error'); return; }
+        const email = document.getElementById('keygenEmail').value.trim();
+        const slot  = document.getElementById('keygenSlot').value || '1';
+        if (!email) { setOutput('keygenOutput', 'Podaj adres email.', 'error'); return; }
+
+        const btn = document.getElementById('btnKeygen');
+        btn.disabled = true;
+        setOutput('keygenOutput', '1/5 Autoryzacja gen...', null);
+
+        try {
+            const { buildCertificate, armorCertificate } = await import('./src/cert-builder.js');
+            const { DESCR, encodeDescr } = await import('./src/keychain.js');
+
+            const genToken  = await hem.authorizePassword(hsmPassword, 'keymgmt:gen');
+            setOutput('keygenOutput', '2/5 Generuję Ed25519...', null);
+
+            const signDescr = encodeDescr(DESCR.selfSign(email, Number(slot)));
+            const { kid: kid_sign } = await hem.createKeyPair(genToken, `pgp-sign-${email}`, 'ED25519', signDescr);
+
+            setOutput('keygenOutput', `3/5 Generuję X25519... (kid_sign=${kid_sign})`, null);
+
+            const ecdhDescr = encodeDescr(DESCR.selfEcdh(email, Number(slot)));
+            const { kid: kid_ecdh } = await hem.createKeyPair(genToken, `pgp-ecdh-${email}`, 'CURVE25519', ecdhDescr);
+
+            setOutput('keygenOutput', `4/5 Buduję certyfikat... (kid_ecdh=${kid_ecdh})`, null);
+
+            const useToken     = await hem.authorizePassword(hsmPassword, `keymgmt:use:${kid_sign}`);
+            const useEcdhToken = await hem.authorizePassword(hsmPassword, `keymgmt:use:${kid_ecdh}`);
+
+            const { cert, fingerprint, keyId } = await buildCertificate(
+                hem, useToken, kid_sign, kid_ecdh, email, { ecdhToken: useEcdhToken }
+            );
+            lastArmoredCert = armorCertificate(cert);
+            lastCertBinary  = cert;
+
+            setOutput('keygenOutput',
+                `kid_sign     ${kid_sign}\nkid_ecdh     ${kid_ecdh}\nfingerprint  ${Array.from(fingerprint).map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase()}\n\n${lastArmoredCert}`,
+                'success');
+        } catch (e) {
+            setOutput('keygenOutput', e.message, 'error');
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    document.getElementById('btnKeygenCopy').addEventListener('click', () => {
+        if (!lastCertBinary) return;
+        const b64 = btoa(String.fromCharCode(...lastCertBinary));
+        navigator.clipboard.writeText(b64);
+    });
+
+    document.getElementById('btnKeygenDownload').addEventListener('click', () => {
+        if (!lastArmoredCert) return;
+        const email = document.getElementById('keygenEmail').value.trim() || 'key';
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([lastArmoredCert], { type: 'text/plain' }));
+        a.download = `${email}.asc`;
+        a.click();
+    });
+
+    // ── Key List ──────────────────────────────────────────────────────────────
+    async function refreshKeyList() {
+        const container = document.getElementById('keyList');
+        if (!hem || !listToken) {
+            container.innerHTML = '<div class="output" style="text-align:center;color:var(--text3)">Connect to HSM first</div>';
+            return;
+        }
+        container.innerHTML = '<div class="output" style="color:var(--text3)">Loading...</div>';
+        try {
+            const keys = await hem.searchKeys(listToken, 'PGP:ro');
+            if (!keys.length) {
+                container.innerHTML = '<div class="output" style="text-align:center;color:var(--text3)">No PGP keys found</div>';
+                return;
+            }
+            container.innerHTML = keys.map(k => {
+                const descr = decodeDescr(k.description) || k.label || '—';
+                const isEcdh = k.type?.toUpperCase().includes('ECDH') || k.type?.toUpperCase().includes('CURVE');
+                const algoClass = isEcdh ? 'key-algo ecdh' : 'key-algo';
+                const algoLabel = isEcdh ? 'X25519' : 'Ed25519';
+                const kidShort = k.kid ? k.kid.slice(0, 12) + '...' : '—';
+                return `<div class="key-item">
+                    <span class="${algoClass}">${algoLabel}</span>
+                    <span class="key-descr" title="${descr}">${descr}</span>
+                    <span class="key-kid">${kidShort}</span>
+                </div>`;
+            }).join('');
+        } catch (e) {
+            container.innerHTML = `<div class="output error">${e.message}</div>`;
+        }
+    }
+
+    document.getElementById('btnRefreshKeys').addEventListener('click', refreshKeyList);
+
+    // ── Sign ──────────────────────────────────────────────────────────────────
+    let lastSignedMessage = null;
+
+    document.getElementById('btnSign').addEventListener('click', async () => {
+        if (!hem || !hsmPassword) { setOutput('signOutput', 'Najpierw połącz z HSM.', 'error'); return; }
+        const email   = document.getElementById('signKey').value.trim();
+        const message = document.getElementById('signMessage').value;
+        if (!email || !message) { setOutput('signOutput', 'Podaj email i wiadomość.', 'error'); return; }
+
+        const btn = document.getElementById('btnSign');
+        btn.disabled = true;
+        setOutput('signOutput', '1/4 Szukam klucza sign...', null);
+
+        try {
+            const { DESCR, decodeDescr } = await import('./src/keychain.js');
+            const { signCleartextMessage } = await import('./src/cert-builder.js');
+            const { lookupKey } = await import('./src/wkd-client.js');
+            const openpgp = await import('openpgp');
+
+            const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
+            const keys    = await hem.searchKeys(listTok, DESCR.selfSign(email));
+            const signKey = keys.find(k => decodeDescr(k.description) === DESCR.selfSign(email));
+            if (!signKey) throw new Error(`Nie znaleziono klucza sign dla ${email}`);
+
+            setOutput('signOutput', '2/4 Pobieram pubkey z WKD...', null);
+            const keyBytes = await lookupKey(email);
+            if (!keyBytes) throw new Error(`Klucz nie znaleziony w WKD dla ${email} — opublikuj najpierw`);
+            const pubKey   = await openpgp.readKey({ binaryKey: keyBytes });
+            const keyId8   = Uint8Array.from(pubKey.getKeyID().bytes, c => c.charCodeAt(0));
+
+            setOutput('signOutput', `3/4 kid: ${signKey.kid}\nPodpisuję...`, null);
+            const useTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${signKey.kid}`);
+
+            const armored = await signCleartextMessage(hem, useTok, signKey.kid, keyId8, message);
+            lastSignedMessage = armored;
+
+            setOutput('signOutput', armored, 'success');
+        } catch (e) {
+            setOutput('signOutput', e.message, 'error');
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    document.getElementById('btnSignCopy').addEventListener('click', () => {
+        if (lastSignedMessage) navigator.clipboard.writeText(lastSignedMessage);
+    });
+
+    // ── Verify ────────────────────────────────────────────────────────────────
+    // ── Verify ────────────────────────────────────────────────────────────────
+    document.getElementById('btnVerifyFillWkd').addEventListener('click', async () => {
+        const email = document.getElementById('verifyEmail').value.trim();
+        if (!email) { setOutput('verifyOutput', 'Wpisz email do WKD lookup.', 'error'); return; }
+        try {
+            const { lookupKey } = await import('./src/wkd-client.js');
+            const openpgp = await import('openpgp');
+            const keyBytes = await lookupKey(email);
+            if (!keyBytes) throw new Error('Klucz nie znaleziony w WKD');
+            const armored = await openpgp.armor(openpgp.enums.armor.publicKey, keyBytes);
+            document.getElementById('verifyPubkey').value = armored;
+            setOutput('verifyOutput', `Pobrano klucz dla ${email}`, 'success');
+        } catch (e) {
+            setOutput('verifyOutput', e.message, 'error');
+        }
+    });
+
+    document.getElementById('btnVerify').addEventListener('click', async () => {
+        const armoredSigned = document.getElementById('verifyMessage').value.trim();
+        const armoredPubkey = document.getElementById('verifyPubkey').value.trim();
+        if (!armoredSigned) { setOutput('verifyOutput', 'Wklej podpisaną wiadomość.', 'error'); return; }
+        if (!armoredPubkey) { setOutput('verifyOutput', 'Wklej klucz publiczny (armored).', 'error'); return; }
+
+        try {
+            const { verifySignedMessage } = await import('./src/openpgp-bridge.js');
+            const { valid, keyID } = await verifySignedMessage(armoredSigned, armoredPubkey);
+            setOutput('verifyOutput', `✓ VALID (local)\nkeyID: ${keyID}`, 'success');
+        } catch (e) {
+            setOutput('verifyOutput', `✗ INVALID\n${e.message}`, 'error');
+        }
+    });
+
+    document.getElementById('btnVerifyHSM').addEventListener('click', async () => {
+        if (!hem || !hsmPassword) { setOutput('verifyOutput', 'Najpierw połącz z HSM.', 'error'); return; }
+        const armoredSigned = document.getElementById('verifyMessage').value.trim();
+        const email = document.getElementById('verifyEmail').value.trim();
+        if (!armoredSigned) { setOutput('verifyOutput', 'Wklej podpisaną wiadomość.', 'error'); return; }
+        if (!email) { setOutput('verifyOutput', 'Podaj email sygnatariusza.', 'error'); return; }
+
+        setOutput('verifyOutput', 'Szukam klucza w HSM...', null);
+        try {
+            const { verifySignedMessageHSM } = await import('./src/openpgp-bridge.js');
+            const { DESCR, decodeDescr } = await import('./src/keychain.js');
+
+            // Find sign key — check selfSign first, then peerSign
+            const keys = await hem.searchKeys(listTok, DESCR.selfSign(email));
+            let signKey = keys.find(k => decodeDescr(k.description) === DESCR.selfSign(email));
+            if (!signKey) {
+                const peerKeys = await hem.searchKeys(listTok, DESCR.peerSign(email));
+                signKey = peerKeys.find(k => decodeDescr(k.description) === DESCR.peerSign(email));
+            }
+            if (!signKey) throw new Error(`Brak klucza sign w HSM dla ${email}`);
+            const kid = signKey.kid;
+
+            const useTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${kid}`);
+            await verifySignedMessageHSM(hem, useTok, kid, armoredSigned);
+            setOutput('verifyOutput', `✓ VALID (HSM)\nkid: ${kid}`, 'success');
+        } catch (e) {
+            const msg = e.message?.includes('406') ? `✗ INVALID (HSM) — zły podpis` : `✗ BŁĄD\n${e.message}`;
+            setOutput('verifyOutput', msg, 'error');
+        }
+    });
+
+    // ── Export ────────────────────────────────────────────────────────────────
+    let lastExportCert = null;
+    let lastExportEmail = null;
+
+    document.getElementById('btnExport').addEventListener('click', async () => {
+        if (!hem || !hsmPassword) { setOutput('exportOutput', 'Najpierw połącz z HSM.', 'error'); return; }
+        const ref = document.getElementById('exportEmail').value.trim();
+        if (!ref) { setOutput('exportOutput', 'Podaj email lub KID.', 'error'); return; }
+
+        const btn = document.getElementById('btnExport');
+        btn.disabled = true;
+        setOutput('exportOutput', 'Szukam kluczy...', null);
+
+        try {
+            const { buildCertificate, armorCertificate } = await import('./src/cert-builder.js');
+            const { DESCR, decodeDescr } = await import('./src/keychain.js');
+
+            const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
+            const allKeys = await hem.searchKeys(listTok, DESCR.selfAll(ref));
+
+            const signKey = allKeys.find(k => decodeDescr(k.description) === DESCR.selfSign(ref));
+            const ecdhKey = allKeys.find(k => decodeDescr(k.description) === DESCR.selfEcdh(ref));
+
+            if (!signKey || !ecdhKey) throw new Error(`Brak kluczy sign/ecdh dla ${ref} w HSM`);
+
+            setOutput('exportOutput', `kid_sign: ${signKey.kid}\nkid_ecdh: ${ecdhKey.kid}\nBuduję certyfikat...`, null);
+
+            const useTok     = await hem.authorizePassword(hsmPassword, `keymgmt:use:${signKey.kid}`);
+            const useEcdhTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${ecdhKey.kid}`);
+
+            const { cert, fingerprint } = await buildCertificate(
+                hem, useTok, signKey.kid, ecdhKey.kid, ref, { ecdhToken: useEcdhTok }
+            );
+
+            lastExportCert  = armorCertificate(cert);
+            lastExportEmail = ref;
+
+            setOutput('exportOutput',
+                `fingerprint  ${Array.from(fingerprint).map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase()}\n\n${lastExportCert}`,
+                'success');
+        } catch (e) {
+            setOutput('exportOutput', e.message, 'error');
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    document.getElementById('btnExportCopy').addEventListener('click', () => {
+        if (lastExportCert) navigator.clipboard.writeText(lastExportCert);
+    });
+
+    document.getElementById('btnExportDownload').addEventListener('click', () => {
+        if (!lastExportCert) return;
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([lastExportCert], { type: 'text/plain' }));
+        a.download = `${lastExportEmail || 'pubkey'}.asc`;
+        a.click();
+    });
+
+    // ── Encrypt ───────────────────────────────────────────────────────────────
+    document.getElementById('btnWkdLookupEncrypt').addEventListener('click', async () => {
+        const email = document.getElementById('encryptTo').value.trim();
+        if (!email) { setOutput('encryptOutput', 'Podaj adres email.', 'error'); return; }
+        try {
+            const { lookupKey } = await import('./src/wkd-client.js');
+            const openpgp = await import('openpgp');
+            const keyBytes = await lookupKey(email);
+            if (!keyBytes) throw new Error('Klucz nie znaleziony w WKD');
+            const armored = await openpgp.armor(openpgp.enums.armor.publicKey, keyBytes);
+            document.getElementById('encryptPubkey').value = armored;
+            setOutput('encryptOutput', `Pobrano klucz dla ${email}`, 'success');
+        } catch (e) {
+            setOutput('encryptOutput', e.message, 'error');
+        }
+    });
+
+    document.getElementById('btnEncrypt').addEventListener('click', async () => {
+        const plaintext    = document.getElementById('encryptMessage').value.trim();
+        const armoredPubkey = document.getElementById('encryptPubkey').value.trim();
+        const toEmail      = document.getElementById('encryptTo').value.trim();
+        if (!plaintext) { setOutput('encryptOutput', 'Wpisz wiadomość.', 'error'); return; }
+        if (!armoredPubkey && !toEmail) { setOutput('encryptOutput', 'Wklej klucz publiczny lub podaj email i użyj WKD Lookup.', 'error'); return; }
+
+        setOutput('encryptOutput', 'Szyfrowanie...', null);
+        try {
+            const openpgp = await import('openpgp');
+            let pubKey;
+            if (armoredPubkey) {
+                pubKey = await openpgp.readKey({ armoredKey: armoredPubkey });
+            } else {
+                const { lookupKey } = await import('./src/wkd-client.js');
+                const keyBytes = await lookupKey(toEmail);
+                if (!keyBytes) throw new Error(`Klucz nie znaleziony w WKD dla ${toEmail}`);
+                pubKey = await openpgp.readKey({ binaryKey: keyBytes });
+            }
+            const msg = await openpgp.createMessage({ text: plaintext });
+            const armored = await openpgp.encrypt({ message: msg, encryptionKeys: pubKey });
+            setOutput('encryptOutput', armored, 'success');
+        } catch (e) {
+            setOutput('encryptOutput', e.message, 'error');
+        }
+    });
+
+    document.getElementById('btnEncryptHSM').addEventListener('click', async () => {
+        if (!hem || !hsmPassword) { setOutput('encryptOutput', 'Najpierw połącz z HSM.', 'error'); return; }
+        const plaintext = document.getElementById('encryptMessage').value.trim();
+        const toEmail   = document.getElementById('encryptTo').value.trim();
+        if (!plaintext) { setOutput('encryptOutput', 'Wpisz wiadomość.', 'error'); return; }
+        if (!toEmail)   { setOutput('encryptOutput', 'Podaj email odbiorcy.', 'error'); return; }
+
+        setOutput('encryptOutput', 'Szukam kluczy w HSM...', null);
+        try {
+            const { encryptMessageHSM } = await import('./src/openpgp-bridge.js');
+            const { DESCR, decodeDescr } = await import('./src/keychain.js');
+
+            const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
+            const allKeys = await hem.searchKeys(listTok, DESCR.selfAll(toEmail));
+            const signKey = allKeys.find(k => decodeDescr(k.description) === DESCR.selfSign(toEmail));
+            const ecdhKey = allKeys.find(k => decodeDescr(k.description) === DESCR.selfEcdh(toEmail));
+            if (!signKey) throw new Error(`Brak klucza Ed25519 w HSM dla ${toEmail}`);
+            if (!ecdhKey) throw new Error(`Brak klucza X25519 w HSM dla ${toEmail}`);
+
+            const signTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${signKey.kid}`);
+            const ecdhTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${ecdhKey.kid}`);
+
+            setOutput('encryptOutput', 'Buduję cert z HSM i szyfruję...', null);
+            const armored = await encryptMessageHSM(hem, signTok, ecdhTok, signKey.kid, ecdhKey.kid, toEmail, plaintext);
+            setOutput('encryptOutput', armored, 'success');
+        } catch (e) {
+            setOutput('encryptOutput', e.message, 'error');
+        }
+    });
+
+    document.getElementById('btnEncryptCopy').addEventListener('click', () => {
+        const text = document.getElementById('encryptOutput').textContent;
+        if (text && text !== '--') navigator.clipboard.writeText(text);
+    });
+
+    // ── Decrypt ───────────────────────────────────────────────────────────────
+    document.getElementById('btnDecrypt').addEventListener('click', async () => {
+        if (!hem || !hsmPassword) { setOutput('decryptOutput', 'Najpierw połącz z HSM.', 'error'); return; }
+        const armoredMsg = document.getElementById('decryptMessage').value.trim();
+        const emailOrKid = document.getElementById('decryptKey').value.trim();
+        if (!armoredMsg) { setOutput('decryptOutput', 'Wklej zaszyfrowaną wiadomość.', 'error'); return; }
+        if (!emailOrKid) { setOutput('decryptOutput', 'Podaj email lub KID klucza ECDH.', 'error'); return; }
+
+        setOutput('decryptOutput', 'Szukam klucza ECDH...', null);
+        try {
+            const { decryptMessage } = await import('./src/openpgp-bridge.js');
+            const { DESCR, decodeDescr } = await import('./src/keychain.js');
+            const { lookupKey } = await import('./src/wkd-client.js');
+            const openpgp = await import('openpgp');
+
+            const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
+
+            // Find ECDH key by email descr or treat as KID directly
+            let ecdhKid;
+            const isKid = /^[0-9a-f]{32}$/i.test(emailOrKid);
+            if (isKid) {
+                ecdhKid = emailOrKid;
+            } else {
+                const keys = await hem.searchKeys(listTok, DESCR.selfEcdh(emailOrKid));
+                const found = keys.find(k => decodeDescr(k.description) === DESCR.selfEcdh(emailOrKid));
+                if (!found) throw new Error(`Brak klucza ECDH w HSM dla ${emailOrKid}`);
+                ecdhKid = found.kid;
+            }
+
+            const useTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${ecdhKid}`);
+            const pubInfo = await hem.getPubKey(useTok, ecdhKid);
+            const pubkey32 = Uint8Array.from(atob(pubInfo.pubkey), c => c.charCodeAt(0));
+
+            // Get subkey fingerprint from WKD
+            const lookupEmail = isKid ? null : emailOrKid;
+            let fingerprint;
+            if (lookupEmail) {
+                const keyBytes = await lookupKey(lookupEmail);
+                if (!keyBytes) throw new Error(`Brak klucza WKD dla ${lookupEmail} — potrzebny do fingerprintu`);
+                const key = await openpgp.readKey({ binaryKey: keyBytes });
+                const subkeys = key.getSubkeys();
+                fingerprint = Uint8Array.from(subkeys[0].getFingerprint().match(/.{2}/g).map(b => parseInt(b, 16)));
+            } else {
+                throw new Error('Podaj email (nie KID) aby pobrać fingerprint subklucza z WKD');
+            }
+
+            setOutput('decryptOutput', 'Odszyfrowywanie przez HSM...', null);
+            const plaintext = await decryptMessage(armoredMsg, hem, useTok, ecdhKid, pubkey32, fingerprint);
+            setOutput('decryptOutput', plaintext, 'success');
+        } catch (e) {
+            setOutput('decryptOutput', e.message, 'error');
+        }
+    });
+
+    // ── WKD Lookup ────────────────────────────────────────────────────────────
+    document.getElementById('btnWkdLookup').addEventListener('click', async () => {
+        const email = document.getElementById('wkdLookupEmail').value.trim();
+        if (!email) { setOutput('wkdLookupOutput', 'Podaj adres email.', 'error'); return; }
+
+        setOutput('wkdLookupOutput', 'Szukam...', null);
+        try {
+            const { lookupKey, wkdHash } = await import('./src/wkd-client.js');
+            const [local] = email.split('@');
+            const hash = await wkdHash(local);
+            const keyBytes = await lookupKey(email);
+            if (!keyBytes) {
+                setOutput('wkdLookupOutput', 'Klucz nie znaleziony (404).', 'error');
+                return;
+            }
+            setOutput('wkdLookupOutput',
+                `Znaleziono: ${keyBytes.length} bajtów\nhash: ${hash}`,
+                'success');
+        } catch (e) {
+            setOutput('wkdLookupOutput', e.message, 'error');
+        }
+    });
+
+    document.getElementById('btnWkdImport').addEventListener('click', async () => {
+        if (!hem || !hsmPassword) { setOutput('wkdLookupOutput', 'Najpierw połącz z HSM.', 'error'); return; }
+        const email = document.getElementById('wkdLookupEmail').value.trim();
+        if (!email) { setOutput('wkdLookupOutput', 'Podaj adres email.', 'error'); return; }
+
+        setOutput('wkdLookupOutput', 'Importuję klucze do HSM...', null);
+        try {
+            const { importKeyFromWKD } = await import('./src/openpgp-bridge.js');
+            const impToken = await hem.authorizePassword(hsmPassword, 'keymgmt:imp');
+            const { kidSign, kidEcdh } = await importKeyFromWKD(hem, impToken, email);
+            setOutput('wkdLookupOutput',
+                `Zaimportowano (peer):\nsign KID: ${kidSign}\necdh KID: ${kidEcdh}`,
+                'success');
+        } catch (e) {
+            setOutput('wkdLookupOutput', e.message, 'error');
+        }
+    });
+
+
+    document.getElementById('btnAuth').addEventListener('click', async () => {
+        const url  = document.getElementById('hsmUrl').value.trim();
+        const pass = document.getElementById('hsmPassword').value;
+        const btn  = document.getElementById('btnAuth');
+
+        if (!url || !pass) {
+            setOutput('authOutput', 'Podaj HSM URL i hasło.', 'error');
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'CONNECTING...';
+        setStatus(false, 'CONNECTING...');
+        setOutput('authOutput', '1/3 hemCheckin...', null);
+
+        try {
+            hem = new HEM(url, { debug: false });
+
+            await hem.hemCheckin();
+            setOutput('authOutput', '1/3 checkin OK\n2/3 authorizing...', null);
+
+            const token = await hem.authorizePassword(pass, 'keymgmt:list');
+
+            hsmPassword = pass;
+            listToken   = token;
+
+            setStatus(true, 'CONNECTED');
+            setBadge('authBadge', 'CONNECTED', 'ok');
+            setOutput('authOutput',
+                `checkin    OK\nauth       OK\nscope      keymgmt:list\ntoken      ${token.slice(0, 40)}...`,
+                'success');
+        } catch (e) {
+            hem = null;
+            hsmPassword = null;
+            listToken   = null;
+            setStatus(false, 'ERROR');
+            setBadge('authBadge', 'ERROR', 'err');
+            setOutput('authOutput', e.message, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'CONNECT';
+        }
+    });
+</script>
+
+</body>
+</html>

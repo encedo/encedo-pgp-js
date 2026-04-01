@@ -1,42 +1,39 @@
 /**
- * test-sign.js — Sign a message using an HSM Ed25519 key.
+ * test-sign.js — Sign a message using an HSM Ed25519 key (OpenPGP cleartext format).
  *
  * Usage:
  *   node test/test-sign.js \
  *     --hsm https://my.ence.do \
- *     --email jan@pgptest.pl \
+ *     --email krzysztof@encedo.com \
  *     --message "Hello World" \
  *     [--password <pw>]
  *
  * Output:
- *   ASCII-armored signed message on stdout.
+ *   ASCII-armored PGP signed message on stdout.
+ *   Verify with: gpg --verify <(node test/test-sign.js ...)
  */
 
 import { HEM } from '../../hem-sdk-js/hem-sdk.js';
 import * as openpgp from 'openpgp';
+import { signCleartextMessage } from '../src/cert-builder.js';
+import { lookupKey } from '../src/wkd-client.js';
 import { DESCR, decodeDescr } from '../src/keychain.js';
 import { parseArgs, prompt } from './util.js';
 import fs from 'node:fs';
 
-const args     = parseArgs(process.argv.slice(2));
-const hsmUrl   = args.hsm   ?? 'https://my.ence.do';
-const email    = args.email ?? 'test@pgptest.pl';
-const password = args.password ?? await prompt('HSM password: ');
+const args      = parseArgs(process.argv.slice(2));
+const hsmUrl    = args.hsm     ?? 'https://my.ence.do';
+const email     = args.email   ?? 'krzysztof@encedo.com';
+const password  = args.password ?? await prompt('HSM password: ');
 const plaintext = args.message ?? (args.file ? fs.readFileSync(args.file, 'utf8') : 'Test signed message');
-const certPath  = args.cert;
-
-if (!certPath) {
-  console.error('Usage: --cert path/to/pubkey.asc (required for signing key metadata)');
-  process.exit(1);
-}
 
 const hem = new HEM(hsmUrl, { debug: !!args.debug });
 await hem.hemCheckin();
 
 const listToken = await hem.authorizePassword(password, 'keymgmt:list');
 
-// Find signing key
-const keys = await hem.searchKeys(listToken, DESCR.selfSign(email));
+// Find signing key by DESCR
+const keys    = await hem.searchKeys(listToken, DESCR.selfSign(email));
 const signKey = keys.find(k => decodeDescr(k.description) === DESCR.selfSign(email));
 if (!signKey) {
   console.error(`No sign key found for ${email} — run test-keygen.js first`);
@@ -44,19 +41,17 @@ if (!signKey) {
 }
 console.error(`Sign kid: ${signKey.kid}`);
 
+// Get key ID from WKD cert
+const keyBytes = await lookupKey(email);
+if (!keyBytes) {
+  console.error(`No WKD key found for ${email} — publish key first`);
+  process.exit(1);
+}
+const pubKey = await openpgp.readKey({ binaryKey: keyBytes });
+const keyId8 = Uint8Array.from(pubKey.getKeyID().bytes, c => c.charCodeAt(0));
+console.error(`Key ID: ${Buffer.from(keyId8).toString('hex').toUpperCase()}`);
+
 const useToken = await hem.authorizePassword(password, `keymgmt:use:${signKey.kid}`);
 
-// Sign the data using HSM directly (detached signature)
-const msgBytes  = new TextEncoder().encode(plaintext);
-const sig64     = await hem.exdsaSignBytes(useToken, signKey.kid, msgBytes, 'Ed25519');
-const sigHex    = Buffer.from(sig64).toString('hex');
-
-console.error(`Signature (hex): ${sigHex}`);
-
-// TODO: wrap in proper OpenPGP signed message format using the cert
-// For now, output the raw signature alongside the message for verification
-console.log('=== MESSAGE ===');
-console.log(plaintext);
-console.log('=== Ed25519 SIGNATURE (base64) ===');
-console.log(btoa(String.fromCharCode(...sig64)));
-console.error('\nVerify with: gpg --verify (after cert-builder integration in Phase 3)');
+const armored = await signCleartextMessage(hem, useToken, signKey.kid, keyId8, plaintext);
+console.log(armored);

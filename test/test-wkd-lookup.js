@@ -18,7 +18,7 @@ const email = args.email ?? 'test@pgptest.pl';
 
 console.error(`Looking up WKD key for: ${email}`);
 const [local, domain] = email.split('@');
-console.error(`  hash: ${wkdHash(local)} (Z-Base-32 of SHA1("${local.toLowerCase()}"))`);
+console.error(`  hash: ${await wkdHash(local)} (Z-Base-32 of SHA1("${local.toLowerCase()}"))`);
 
 const keyBytes = await lookupKey(email);
 if (!keyBytes) {

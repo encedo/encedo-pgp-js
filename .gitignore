@@ -1,5 +1,6 @@
 node_modules/
 *.log
+*.asc
 
 # local test config (contains HSM URL, password)
 test/config.local.json
