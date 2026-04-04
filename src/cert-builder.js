@@ -136,6 +136,11 @@ function issuerSubpkt(keyId8) {
   return subpkt(16, keyId8);
 }
 
+/** Key Expiration Time subpacket (type 9) — seconds after key creation, 0 = no expiry. */
+function keyExpirationTimeSubpkt(secondsFromCreation) {
+  return subpkt(9, u32be(secondsFromCreation));
+}
+
 // Key flags: certify + sign = 0x03; encrypt comms + storage = 0x0C
 const KEY_FLAG_CERT_SIGN = 0x03;
 const KEY_FLAG_ENCRYPT   = 0x0C;
@@ -356,6 +361,8 @@ export async function signCleartextMessage(hem, token, kid_sign, keyId8, message
 export async function buildCertificate(hem, token, kid_sign, kid_ecdh, email, opts = {}) {
   const ts = opts.timestamp ?? Math.floor(Date.now() / 1000);
   const uid = email;
+  // expiryTimestamp is an absolute Unix timestamp; convert to seconds-from-creation for subpacket
+  const expirySeconds = opts.expiryTimestamp ? (opts.expiryTimestamp - ts) : 0;
 
   // 1. Fetch public keys from HSM
   // token must be scoped to keymgmt:use:<kid_sign> (used for signing + getPubKey of sign key)
@@ -385,6 +392,7 @@ export async function buildCertificate(hem, token, kid_sign, kid_ecdh, email, op
     preferredHashAlgos(),
     preferredCompression(),
     featuresSubpkt(),
+    ...(expirySeconds > 0 ? [keyExpirationTimeSubpkt(expirySeconds)] : []),
   );
   const certHashPrefix = sigHashPrefix(0x13, 22, 8, certHashedSubpkts);
   const certHash = await hashUidCertification(primaryKeyBody, uidBody, certHashPrefix);
@@ -403,6 +411,7 @@ export async function buildCertificate(hem, token, kid_sign, kid_ecdh, email, op
   const subkeyHashedSubpkts = concat(
     sigCreationTime(ts),
     keyFlagsSubpkt(KEY_FLAG_ENCRYPT),
+    ...(expirySeconds > 0 ? [keyExpirationTimeSubpkt(expirySeconds)] : []),
   );
   const subkeyHashPrefix = sigHashPrefix(0x18, 22, 8, subkeyHashedSubpkts);
   const subkeyHash = await hashSubkeyBinding(primaryKeyBody, subkeyBody, subkeyHashPrefix);
