@@ -5,16 +5,19 @@
 /**
  * Publish a binary OpenPGP public key to the encedo-wkd server.
  *
- * @param {string}     wkdUrl      Base URL of encedo-wkd, e.g. 'http://localhost:8089'
+ * @param {string}     wkdUrl      Base URL of encedo-wkd, e.g. 'https://mailserver/wkd'
  * @param {string}     email       Recipient email address
  * @param {Uint8Array} pubkeyBytes Binary OpenPGP public key packet
+ * @param {string}     [authToken] Carbonio auth token (X-Auth-Token); required when server has carbonio_url set
  * @returns {Promise<{ ok: boolean, hash: string }>}
  */
-export async function publishKey(wkdUrl, email, pubkeyBytes) {
+export async function publishKey(wkdUrl, email, pubkeyBytes, authToken) {
   const pubkey_base64 = btoa(String.fromCharCode(...pubkeyBytes));
+  const headers = { 'Content-Type': 'application/json' };
+  if (authToken) headers['X-Auth-Token'] = authToken;
   const res = await fetch(`${wkdUrl}/api/publish`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ email, pubkey_base64 }),
   });
   if (!res.ok) {
@@ -27,14 +30,17 @@ export async function publishKey(wkdUrl, email, pubkeyBytes) {
 /**
  * Revoke (remove) a public key from the encedo-wkd server.
  *
- * @param {string} wkdUrl   Base URL of encedo-wkd
- * @param {string} email    Email address whose key to remove
+ * @param {string} wkdUrl      Base URL of encedo-wkd
+ * @param {string} email       Email address whose key to remove
+ * @param {string} [authToken] Carbonio auth token (X-Auth-Token); required when server has carbonio_url set
  * @returns {Promise<{ ok: boolean }>}
  */
-export async function revokeKey(wkdUrl, email) {
+export async function revokeKey(wkdUrl, email, authToken) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (authToken) headers['X-Auth-Token'] = authToken;
   const res = await fetch(`${wkdUrl}/api/revoke`, {
     method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ email }),
   });
   if (!res.ok) {
