@@ -648,7 +648,7 @@ export async function encryptAndSign(hem, signToken, kid_sign, keyId8, recipient
   //   into the PacketList array (no streaming), so write() serialises all three.
   const litMsg    = await openpgp.createMessage({ binary: dataBytes, format: 'binary' });
   const existingSig = await openpgp.readSignature({ binarySignature: sigPkt });
-  const signedMsg = await litMsg.sign([], [], existingSig);
+  const signedMsg = await litMsg.sign([], existingSig);
   return openpgp.encrypt({
     message: signedMsg,
     encryptionKeys,
