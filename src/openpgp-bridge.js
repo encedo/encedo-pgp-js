@@ -312,6 +312,36 @@ async function decryptPkesk(pkesk, hem, token, kid_ecdh, ourPubkey32, fingerprin
   return { data: sessionKeyData, algorithm: algoName };
 }
 
+/**
+ * HSM ECDH decryption of a PKESK packet — openpgp-free interface.
+ * Caller extracts V and C.data from the openpgp.js PKESK object, then passes
+ * raw bytes here so this function needs zero openpgp.js API calls.
+ *
+ * @param {Uint8Array} ephemeralRaw  Ephemeral public key (33 bytes: 0x40 + 32, or 32 raw)
+ * @param {Uint8Array} wrappedKey    AES-KW wrapped session key (C.data)
+ * @param {Uint8Array} fingerprint   20-byte fingerprint of recipient ECDH subkey
+ * @param {number}     algoId        Symmetric algorithm id (openpgp.enums.symmetric)
+ * @param {object}     hem           HEM instance
+ * @param {string}     token         JWT with keymgmt:use:<kid_ecdh> scope
+ * @param {string}     kid_ecdh      X25519 key ID in HSM
+ * @returns {Promise<{ data: Uint8Array, algorithm: string }>}  Decrypted session key
+ */
+export async function hsmDecryptPkesk(ephemeralRaw, wrappedKey, fingerprint, algoId, hem, token, kid_ecdh) {
+  const ephemeral32 = stripNativePrefix(ephemeralRaw);
+
+  const ephemeralB64 = toB64(ephemeral32);
+  const sharedSecret = await hem.ecdh(token, kid_ecdh, ephemeralB64);
+
+  const kdfHashId = 8; // SHA-256
+  const kdfSymId  = 9; // AES-256
+  const kwkLen    = 32;
+  const kwk = await rfc6637kdf(sharedSecret, kdfHashId, kdfSymId, fingerprint, OID_X25519, kwkLen);
+
+  const sessionKeyData = await aesKeyUnwrap(kwk, wrappedKey, algoId);
+  // Return raw algoId — caller (in webpack context) resolves the enum name
+  return { data: sessionKeyData, algoId };
+}
+
 // ---------------------------------------------------------------------------
 // RFC 6637 §8 — ECDH KDF
 // ---------------------------------------------------------------------------
@@ -547,6 +577,53 @@ export async function verifySignedMessageHSM(hem, token, kid, armoredSigned) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Build an OpenPGP SignaturePacket (tag 2) using the HSM Ed25519 key.
+ * No openpgp.js API used — pure byte manipulation + HSM sign call.
+ *
+ * Callers that bundle openpgp separately (e.g. via webpack) should use this
+ * instead of encryptAndSign, then drive openpgp.createMessage / openpgp.encrypt
+ * themselves to avoid the two-openpgp-instance problem.
+ *
+ * @param {object}     hem        HEM instance
+ * @param {string}     signToken  JWT with keymgmt:use:<kid_sign> scope
+ * @param {string}     kid_sign   Ed25519 key ID in HSM
+ * @param {Uint8Array} keyId8     8-byte OpenPGP key ID of the signing key
+ * @param {string}     plaintext  Message to sign (UTF-8)
+ * @returns {Promise<{ sigPkt: Uint8Array, dataBytes: Uint8Array }>}
+ *   sigPkt    — binary OpenPGP SignaturePacket (tag 2), ready for readSignature
+ *   dataBytes — UTF-8 encoded plaintext (same bytes that were signed)
+ */
+export async function buildHsmSignaturePkt(hem, signToken, kid_sign, keyId8, plaintext) {
+  const ts = Math.floor(Date.now() / 1000);
+  const dataBytes = new TextEncoder().encode(plaintext);
+
+  const hashedSubpkts = concat(
+    subpktEncode(2,  u32be(ts)),
+    subpktEncode(16, keyId8),
+  );
+  const sigData = concat(
+    new Uint8Array([4, 0x00, 22, 8]),
+    u16be(hashedSubpkts.length),
+    hashedSubpkts,
+  );
+  const trailer = concat(new Uint8Array([0x04, 0xFF]), u32be(sigData.length));
+  const hash  = await sha256(concat(dataBytes, sigData, trailer));
+  const sig64 = await hem.exdsaSignBytes(signToken, kid_sign, hash, 'Ed25519');
+
+  const unhashedSubpkts = new Uint8Array(0);
+  const sigBody = concat(
+    sigData,
+    u16be(unhashedSubpkts.length),
+    unhashedSubpkts,
+    hash.slice(0, 2),
+    encodeEdDSASig(sig64),
+  );
+  return { sigPkt: pktEncode(2, sigBody), dataBytes };
+}
+
+// ---------------------------------------------------------------------------
+
+/**
  * Sign and encrypt a message using an HSM Ed25519 signing key and one or more
  * recipient public keys.  Produces a standard OpenPGP inline-signed encrypted
  * message compatible with Thunderbird, Proton, Enigmail, and GPG:
@@ -648,7 +725,7 @@ export async function encryptAndSign(hem, signToken, kid_sign, keyId8, recipient
   //   into the PacketList array (no streaming), so write() serialises all three.
   const litMsg    = await openpgp.createMessage({ binary: dataBytes, format: 'binary' });
   const existingSig = await openpgp.readSignature({ binarySignature: sigPkt });
-  const signedMsg = await litMsg.sign([], existingSig);
+  const signedMsg = await litMsg.sign([], [], existingSig);
   return openpgp.encrypt({
     message: signedMsg,
     encryptionKeys,

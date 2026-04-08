@@ -12,6 +12,8 @@ export {
   encryptMessage,
   encryptMessageHSM,
   encryptAndSign,
+  buildHsmSignaturePkt,
+  hsmDecryptPkesk,
   decryptMessage,
   decryptAndVerify,
   decryptAndVerifyHSM,
@@ -24,4 +26,4 @@ export { lookupKey, wkdHash } from './wkd-client.js';
 
 export { publishKey, revokeKey } from './wkd-publish.js';
 
-export { DESCR, encodeDescr, decodeDescr, findByDescr } from './keychain.js';
+export { DESCR, encodeDescr, decodeDescr, findByDescr, findSelfSign, findSelfEcdh, findPeerSign, findPeerEcdh, findOwnKeys } from './keychain.js';
