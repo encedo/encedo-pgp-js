@@ -159,13 +159,11 @@ export async function decryptAndVerify(armoredMessage, hem, token, kid_ecdh, our
   for (const pkesk of pkeskPackets) {
     try {
       const sessionKey = await decryptPkesk(pkesk, hem, token, kid_ecdh, ourPubkey32, fingerprint);
-      console.error('decryptAndVerify: sessionKey OK, calling openpgp.decrypt...');
       const result = await openpgp.decrypt({
         message,
         sessionKeys: [sessionKey],
         verificationKeys: [senderKey],
       });
-      console.error('decryptAndVerify: openpgp.decrypt OK, data.length=', result.data?.length);
       const sig = result.signatures[0];
       if (!sig) return { data: result.data, valid: false, keyID: null };
       try {
@@ -272,14 +270,12 @@ async function decryptPkesk(pkesk, hem, token, kid_ecdh, ourPubkey32, fingerprin
 
   const { V, C } = pkesk.encrypted;
   if (!V || !C) {
-    console.error('decryptPkesk: unexpected structure', JSON.stringify({ keys: Object.keys(pkesk.encrypted ?? {}), algo: pkesk.publicKeyAlgorithm }));
     throw new Error('Unexpected PKESK encrypted structure (missing V or C)');
   }
 
   // V is returned by openpgp.js readMPI — already WITHOUT the 2-byte bit count header.
   // For ECDH X25519: V = 0x40 (native prefix) + 32 key bytes = 33 bytes total.
   const ephemeral32 = stripNativePrefix(V);
-  console.error(`decryptPkesk: V.length=${V?.length} ephemeral32.length=${ephemeral32?.length} C.data.length=${C?.data?.length}`);
 
   // C.data is the wrapped session key (already without the 1-byte length prefix)
   const wrappedKey = C.data;
@@ -293,9 +289,7 @@ async function decryptPkesk(pkesk, hem, token, kid_ecdh, ourPubkey32, fingerprin
   const kdfSymId  = 9; // AES-256
   const kwkLen    = 32; // bytes for AES-256
 
-  console.error(`decryptPkesk: sharedSecret.length=${sharedSecret?.length} fingerprint.length=${fingerprint?.length} wrappedKey.length=${wrappedKey?.length}`);
   const kwk = await rfc6637kdf(sharedSecret, kdfHashId, kdfSymId, fingerprint, OID_X25519, kwkLen);
-  console.error(`decryptPkesk: kwk=${Array.from(kwk).map(b=>b.toString(16).padStart(2,'0')).join('')}`);
 
   // 3. AES-256 Key Unwrap (RFC 3394) via WebCrypto AES-KW
   const sessionKeyAlgo = pkesk.sessionKeyAlgorithm
@@ -307,7 +301,6 @@ async function decryptPkesk(pkesk, hem, token, kid_ecdh, ourPubkey32, fingerprin
 
   const sessionKeyData = await aesKeyUnwrap(kwk, wrappedKey, algoId);
   const algoName = openpgp.enums.read(openpgp.enums.symmetric, algoId);
-  console.error(`decryptPkesk: sessionKeyData.length=${sessionKeyData?.length} algoId=${algoId} algoName=${algoName}`);
 
   return { data: sessionKeyData, algorithm: algoName };
 }
