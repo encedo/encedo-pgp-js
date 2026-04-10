@@ -11,7 +11,8 @@
     "test:wkd": "node test/test-wkd-lookup.js",
     "test:encrypt": "node test/test-encrypt.js",
     "test:decrypt": "node test/test-decrypt.js",
-    "test:sign": "node test/test-sign.js"
+    "test:sign": "node test/test-sign.js",
+    "serve": "serve .. -p 8080"
   },
   "dependencies": {
     "openpgp": "^6.0.0"
@@ -19,6 +20,7 @@
   "devDependencies": {
     "@rollup/plugin-alias": "^6.0.0",
     "@rollup/plugin-node-resolve": "^16.0.3",
-    "rollup": "^4.60.1"
+    "rollup": "^4.60.1",
+    "serve": "^14.0.0"
   }
 }

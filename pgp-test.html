@@ -510,6 +510,12 @@
                 <button class="btn btn-primary" id="btnAuth">Connect</button>
             </div>
             <div class="divider"></div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+                <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:var(--text2)">
+                    <input type="checkbox" id="chkCacheKeys" style="accent-color:var(--accent);width:14px;height:14px">
+                    Use cached keys (empty password) — replicates carbonio-pgp-ui path
+                </label>
+            </div>
             <div class="output-label">Session</div>
             <div class="output" id="authOutput">--</div>
         </div>
@@ -737,6 +743,12 @@
     let hsmPassword = null;
     let listToken = null;
 
+    // Returns real password OR empty string (use HEM's cached #derivedKeys),
+    // depending on the "Use cached keys" checkbox.
+    function getPassword() {
+        return document.getElementById('chkCacheKeys').checked ? '' : hsmPassword;
+    }
+
     // ── Navigation ────────────────────────────────────────────────────────────
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', () => {
@@ -789,7 +801,7 @@
             // Record creation timestamp — baked into cert fingerprint
             const iat = Math.floor(Date.now() / 1000);
 
-            const genToken  = await hem.authorizePassword(hsmPassword, 'keymgmt:gen');
+            const genToken  = await hem.authorizePassword(getPassword(), 'keymgmt:gen');
             setOutput('keygenOutput', '2/5 Generuję Ed25519...', null);
 
             const signDescr = encodeDescr(DESCR.selfSign(email, iat));
@@ -802,8 +814,8 @@
 
             setOutput('keygenOutput', `4/5 Buduję certyfikat... (kid_ecdh=${kid_ecdh})`, null);
 
-            const useToken     = await hem.authorizePassword(hsmPassword, `keymgmt:use:${kid_sign}`);
-            const useEcdhToken = await hem.authorizePassword(hsmPassword, `keymgmt:use:${kid_ecdh}`);
+            const useToken     = await hem.authorizePassword(getPassword(), `keymgmt:use:${kid_sign}`);
+            const useEcdhToken = await hem.authorizePassword(getPassword(), `keymgmt:use:${kid_ecdh}`);
 
             const { cert, fingerprint, keyId } = await buildCertificate(
                 hem, useToken, kid_sign, kid_ecdh, email, { ecdhToken: useEcdhToken, timestamp: iat }
@@ -888,7 +900,7 @@
             const { lookupKey } = await import('./src/wkd-client.js');
             const openpgp = await import('openpgp');
 
-            const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
+            const listTok = await hem.authorizePassword(getPassword(), 'keymgmt:list');
             const keys = await hem.searchKeys(listTok, DESCR.selfAll(email));
             const signKey = findSelfSign(keys, email);
             if (!signKey) throw new Error(`Nie znaleziono klucza sign dla ${email}`);
@@ -900,7 +912,7 @@
             const keyId8   = Uint8Array.from(pubKey.getKeyID().bytes, c => c.charCodeAt(0));
 
             setOutput('signOutput', `3/4 kid: ${signKey.kid}\nPodpisuję...`, null);
-            const useTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${signKey.kid}`);
+            const useTok = await hem.authorizePassword(getPassword(), `keymgmt:use:${signKey.kid}`);
 
             const armored = await signCleartextMessage(hem, useTok, signKey.kid, keyId8, message);
             lastSignedMessage = armored;
@@ -962,7 +974,7 @@
             const { verifySignedMessageHSM } = await import('./src/openpgp-bridge.js');
             const { DESCR, decodeDescr, findSelfSign, findPeerSign } = await import('./src/keychain.js');
 
-            const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
+            const listTok = await hem.authorizePassword(getPassword(), 'keymgmt:list');
 
             // Find sign key — check selfSign first, then peerSign
             const keys = await hem.searchKeys(listTok, DESCR.selfAll(email));
@@ -974,7 +986,7 @@
             if (!signKey) throw new Error(`Brak klucza sign w HSM dla ${email}`);
             const kid = signKey.kid;
 
-            const useTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${kid}`);
+            const useTok = await hem.authorizePassword(getPassword(), `keymgmt:use:${kid}`);
             await verifySignedMessageHSM(hem, useTok, kid, armoredSigned);
             setOutput('verifyOutput', `✓ VALID (HSM)\nkid: ${kid}`, 'success');
         } catch (e) {
@@ -1000,7 +1012,7 @@
             const { buildCertificate, armorCertificate } = await import('./src/cert-builder.js');
             const { DESCR, decodeDescr, parseDescr, findSelfSign, findSelfEcdh } = await import('./src/keychain.js');
 
-            const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
+            const listTok = await hem.authorizePassword(getPassword(), 'keymgmt:list');
             const allKeys = await hem.searchKeys(listTok, DESCR.selfAll(ref));
 
             const signKey = findSelfSign(allKeys, ref);
@@ -1013,8 +1025,8 @@
 
             setOutput('exportOutput', `kid_sign: ${signKey.kid}\nkid_ecdh: ${ecdhKey.kid}\nBuduję certyfikat (iat=${signIat})...`, null);
 
-            const useTok     = await hem.authorizePassword(hsmPassword, `keymgmt:use:${signKey.kid}`);
-            const useEcdhTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${ecdhKey.kid}`);
+            const useTok     = await hem.authorizePassword(getPassword(), `keymgmt:use:${signKey.kid}`);
+            const useEcdhTok = await hem.authorizePassword(getPassword(), `keymgmt:use:${ecdhKey.kid}`);
 
             const { cert, fingerprint } = await buildCertificate(
                 hem, useTok, signKey.kid, ecdhKey.kid, ref, { ecdhToken: useEcdhTok, timestamp: signIat }
@@ -1101,7 +1113,7 @@
             const { encryptMessageHSM } = await import('./src/openpgp-bridge.js');
             const { DESCR, decodeDescr, parseDescr, findSelfSign, findSelfEcdh } = await import('./src/keychain.js');
 
-            const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
+            const listTok = await hem.authorizePassword(getPassword(), 'keymgmt:list');
             const allKeys = await hem.searchKeys(listTok, DESCR.selfAll(toEmail));
             const signKey = findSelfSign(allKeys, toEmail);
             const ecdhKey = findSelfEcdh(allKeys, toEmail);
@@ -1110,8 +1122,8 @@
 
             const signIat = parseDescr(decodeDescr(signKey.description))?.iat ?? 0;
 
-            const signTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${signKey.kid}`);
-            const ecdhTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${ecdhKey.kid}`);
+            const signTok = await hem.authorizePassword(getPassword(), `keymgmt:use:${signKey.kid}`);
+            const ecdhTok = await hem.authorizePassword(getPassword(), `keymgmt:use:${ecdhKey.kid}`);
 
             setOutput('encryptOutput', 'Buduję cert z HSM i szyfruję...', null);
             const armored = await encryptMessageHSM(hem, signTok, ecdhTok, signKey.kid, ecdhKey.kid, toEmail, plaintext, { timestamp: signIat });
@@ -1138,12 +1150,12 @@
             const { DESCR, decodeDescr, findSelfSign } = await import('./src/keychain.js');
             const openpgp = await import('openpgp');
 
-            const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
+            const listTok = await hem.authorizePassword(getPassword(), 'keymgmt:list');
             const allKeys = await hem.searchKeys(listTok, DESCR.selfAll(fromEmail));
             const signKey = findSelfSign(allKeys, fromEmail);
             if (!signKey) throw new Error(`Brak klucza Ed25519 w HSM dla ${fromEmail}`);
 
-            const signTok = await hem.authorizePassword(hsmPassword, `keymgmt:use:${signKey.kid}`);
+            const signTok = await hem.authorizePassword(getPassword(), `keymgmt:use:${signKey.kid}`);
 
             // Get keyId8 from WKD cert — authoritative source, same cert that recipients use
             setOutput('encryptOutput', 'Pobieram keyId z WKD...', null);
@@ -1187,7 +1199,7 @@
             const { lookupKey } = await import('./src/wkd-client.js');
             const openpgp = await import('openpgp');
 
-            const listTok = await hem.authorizePassword(hsmPassword, 'keymgmt:list');
+            const listTok = await hem.authorizePassword(getPassword(), 'keymgmt:list');
 
             // Find ECDH key
             const keys = await hem.searchKeys(listTok, DESCR.selfAll(emailOrKid));
@@ -1195,7 +1207,7 @@
             if (!found) throw new Error(`Brak klucza ECDH w HSM dla ${emailOrKid}`);
             const ecdhKid = found.kid;
 
-            const useTok   = await hem.authorizePassword(hsmPassword, `keymgmt:use:${ecdhKid}`);
+            const useTok   = await hem.authorizePassword(getPassword(), `keymgmt:use:${ecdhKid}`);
             const pubInfo  = await hem.getPubKey(useTok, ecdhKid);
             const pubkey32 = Uint8Array.from(atob(pubInfo.pubkey), c => c.charCodeAt(0));
 
@@ -1275,7 +1287,7 @@
         setOutput('wkdLookupOutput', 'Importuję klucze do HSM...', null);
         try {
             const { importKeyFromWKD } = await import('./src/openpgp-bridge.js');
-            const impToken = await hem.authorizePassword(hsmPassword, 'keymgmt:imp');
+            const impToken = await hem.authorizePassword(getPassword(), 'keymgmt:imp');
             const { kidSign, kidEcdh } = await importKeyFromWKD(hem, impToken, email);
             setOutput('wkdLookupOutput',
                 `Zaimportowano (peer):\nsign KID: ${kidSign}\necdh KID: ${kidEcdh}`,
