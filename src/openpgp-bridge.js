@@ -439,17 +439,18 @@ function subpktEncode(type, data) {
  * Each component is a "native" MPI: bit-count (2 bytes) + raw bytes.
  */
 function encodeEdDSASig(sig64) {
+  // Minimal MPI per RFC 4880 §3.2: body is exactly ceil(bitcount/8) octets, no
+  // leading zero octets. See cert-builder.js nativeMPI for the desync a strict
+  // parser hits when leading zeros are kept.
   function nativeMPI(bytes32) {
-    let bits = 256;
-    for (let i = 0; i < bytes32.length; i++) {
-      if (bytes32[i] === 0) { bits -= 8; continue; }
-      let b = bytes32[i], lz = 0;
-      while (!(b & 0x80)) { b <<= 1; lz++; }
-      bits -= lz;
-      break;
-    }
-    if (bits <= 0) bits = 1;
-    return concat(u16be(bits), bytes32);
+    let start = 0;
+    while (start < bytes32.length && bytes32[start] === 0) start++;
+    if (start === bytes32.length) return u16be(0);
+    const trimmed = bytes32.slice(start);
+    let b = trimmed[0], lz = 0;
+    while (!(b & 0x80)) { b <<= 1; lz++; }
+    const bits = trimmed.length * 8 - lz;
+    return concat(u16be(bits), trimmed);
   }
   return concat(nativeMPI(sig64.slice(0, 32)), nativeMPI(sig64.slice(32, 64)));
 }

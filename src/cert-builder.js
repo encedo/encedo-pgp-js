@@ -82,17 +82,18 @@ function encodeEddsaSignatureMPIs(sig64) {
 }
 
 function nativeMPI(bytes32) {
-  // Count significant bits treating first byte as most significant
-  let bitCount = 256;
-  for (let i = 0; i < bytes32.length; i++) {
-    if (bytes32[i] === 0) { bitCount -= 8; continue; }
-    let b = bytes32[i], lz = 0;
-    while (!(b & 0x80)) { b <<= 1; lz++; }
-    bitCount -= lz;
-    break;
-  }
-  if (bitCount <= 0) bitCount = 1;
-  return concat(u16be(bitCount), bytes32);
+  // Minimal MPI per RFC 4880 §3.2: the body is exactly ceil(bitcount/8) octets
+  // with no leading zero octets. Emitting the full fixed width when the top
+  // octet is zero desyncs a strict parser (it reads ceil(bits/8) octets and the
+  // remainder corrupts the next MPI), so strip leading zeros here.
+  let start = 0;
+  while (start < bytes32.length && bytes32[start] === 0) start++;
+  if (start === bytes32.length) return u16be(0); // value 0 → 0-bit, empty body
+  const trimmed = bytes32.slice(start);
+  let b = trimmed[0], lz = 0;
+  while (!(b & 0x80)) { b <<= 1; lz++; }
+  const bitCount = trimmed.length * 8 - lz;
+  return concat(u16be(bitCount), trimmed);
 }
 
 // ---------------------------------------------------------------------------
