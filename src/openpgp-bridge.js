@@ -18,6 +18,72 @@ import { DESCR, encodeDescr } from './keychain.js';
 const OID_X25519 = new Uint8Array([0x2b, 0x06, 0x01, 0x04, 0x01, 0x97, 0x55, 0x01, 0x05, 0x01]);
 
 // ---------------------------------------------------------------------------
+// WKD key validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a public key fetched from WKD and enforce the checks that must pass
+ * before it is used to encrypt to, or imported for, a given address:
+ *
+ *   - the key parses,
+ *   - the primary key is self-consistent and not revoked/expired
+ *     (openpgp `verifyPrimaryKey`),
+ *   - some User ID whose email equals `email` (case-insensitively — the UID
+ *     string is not normalised even though WKD addresses the key by the
+ *     lower-cased local part) has a verifying self-certification, and
+ *   - when `requireEncryptionKey`, a usable encryption (sub)key exists
+ *     (valid binding signature, encryption key flags, not expired).
+ *
+ * IMPORTANT — scope of this check. It rejects malformed, expired, revoked,
+ * wrong-identity, and non-encrypting keys. It does NOT by itself prove the key
+ * belongs to the real owner of `email`: a self-signed key carrying the right
+ * UID always passes. The identity binding in WKD comes from fetching over TLS
+ * from the authoritative `openpgpkey.<domain>` host — guard that layer (valid
+ * cert, no dangling/hijackable subdomain) separately.
+ *
+ * @param {Uint8Array} keyBytes  Binary OpenPGP public key from WKD
+ * @param {string}     email     Address the key is expected to belong to
+ * @param {object}     [opts]
+ * @param {boolean}    [opts.requireEncryptionKey=true]
+ * @returns {Promise<object>}  Parsed, validated openpgp key
+ */
+export async function readValidatedWkdKey(keyBytes, email, { requireEncryptionKey = true } = {}) {
+  let key;
+  try {
+    key = await openpgp.readKey({ binaryKey: keyBytes });
+  } catch (e) {
+    throw new Error(`WKD key for ${email} could not be parsed: ${e.message}`);
+  }
+
+  try {
+    await key.verifyPrimaryKey();
+  } catch (e) {
+    throw new Error(`WKD key for ${email} has an invalid, revoked, or expired primary key: ${e.message}`);
+  }
+
+  const emailLc = email.trim().toLowerCase();
+  const matching = key.users.filter(u => u.userID?.email?.toLowerCase() === emailLc);
+  let uidOk = false;
+  for (const u of matching) {
+    try { await u.verify(); uidOk = true; break; } catch { /* try next matching UID */ }
+  }
+  if (!uidOk) {
+    const have = key.getUserIDs().join(', ') || 'none';
+    throw new Error(`WKD key for ${email} has no User ID matching that address with a valid self-signature (has: ${have})`);
+  }
+
+  if (requireEncryptionKey) {
+    try {
+      await key.getEncryptionKey();
+    } catch (e) {
+      throw new Error(`WKD key for ${email} has no usable encryption subkey: ${e.message}`);
+    }
+  }
+
+  return key;
+}
+
+// ---------------------------------------------------------------------------
 // Encrypt using recipient public key stored in HSM
 // ---------------------------------------------------------------------------
 
@@ -63,13 +129,12 @@ export async function encryptMessageHSM(hem, signToken, ecdhToken, kid_sign, kid
  * @returns {Promise<string>}  ASCII-armored encrypted (+ optionally signed) message
  */
 export async function encryptMessage(plaintext, toEmails, opts = {}) {
-  // Fetch all recipient public keys from WKD
+  // Fetch all recipient public keys from WKD, validating each before use
   const encryptionKeys = [];
   for (const email of toEmails) {
     const keyBytes = await lookupKey(email);
     if (!keyBytes) throw new Error(`No WKD key found for ${email}`);
-    const pubKey = await openpgp.readKey({ binaryKey: keyBytes });
-    encryptionKeys.push(pubKey);
+    encryptionKeys.push(await readValidatedWkdKey(keyBytes, email));
   }
 
   const message = await openpgp.createMessage({ text: plaintext });
@@ -604,10 +669,10 @@ export async function encryptAndSign(hem, signToken, kid_sign, keyId8, recipient
       // Already an openpgp.PublicKey / Subkey object
       encryptionKeys.push(r);
     } else if (typeof r === 'string' && r.includes('@')) {
-      // Email address → WKD lookup
+      // Email address → WKD lookup (validated against the address)
       const keyBytes = await lookupKey(r);
       if (!keyBytes) throw new Error(`encryptAndSign: no WKD key found for ${r}`);
-      encryptionKeys.push(await openpgp.readKey({ binaryKey: keyBytes }));
+      encryptionKeys.push(await readValidatedWkdKey(keyBytes, r));
     } else if (typeof r === 'string') {
       // Armored public key block
       encryptionKeys.push(await openpgp.readKey({ armoredKey: r }));
@@ -694,17 +759,18 @@ export async function encryptAndSign(hem, signToken, kid_sign, keyId8, recipient
 export async function importKeyFromWKD(hem, token, email) {
   const keyBytes = await lookupKey(email);
   if (!keyBytes) throw new Error(`No WKD key found for ${email}`);
-  const pubKey = await openpgp.readKey({ binaryKey: keyBytes });
+  // Validate before importing anything into the HSM trust store: primary key
+  // self-consistency, a UID matching the address, and a usable encryption subkey.
+  const pubKey = await readValidatedWkdKey(keyBytes, email);
 
   // Primary key — Ed25519 sign
   const signRaw32   = stripNativePrefix(pubKey.keyPacket.publicParams.Q);
   const signDescr   = encodeDescr(DESCR.peerSign(email));
   const { kid: kidSign } = await hem.importPublicKey(token, email.slice(0, 32), 'ED25519', signRaw32, signDescr);
 
-  // Subkey — X25519 ECDH
-  const subkeys = pubKey.getSubkeys();
-  const ecdhSubkey = subkeys.find(sk => sk.keyPacket?.publicParams?.Q);
-  if (!ecdhSubkey) throw new Error(`No X25519 subkey found for ${email}`);
+  // Subkey — X25519 ECDH: use the validated, binding-checked encryption key,
+  // not just the first subkey that happens to carry a Q parameter.
+  const ecdhSubkey = await pubKey.getEncryptionKey();
   const ecdhRaw32  = stripNativePrefix(ecdhSubkey.keyPacket.publicParams.Q);
   const ecdhDescr  = encodeDescr(DESCR.peerEcdh(email));
   const { kid: kidEcdh } = await hem.importPublicKey(token, `${email.slice(0, 28)}/E`, 'CURVE25519', ecdhRaw32, ecdhDescr);

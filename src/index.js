@@ -19,6 +19,7 @@ export {
   verifySignedMessage,
   verifySignedMessageHSM,
   importKeyFromWKD,
+  readValidatedWkdKey,
 } from './openpgp-bridge.js';
 
 export { lookupKey, wkdHash } from './wkd-client.js';
