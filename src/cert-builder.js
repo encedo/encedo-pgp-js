@@ -361,7 +361,12 @@ export async function signCleartextMessage(hem, token, kid_sign, keyId8, message
 
 export async function buildCertificate(hem, token, kid_sign, kid_ecdh, email, opts = {}) {
   const ts = opts.timestamp ?? Math.floor(Date.now() / 1000);
-  const uid = email;
+  // RFC 4880 §5.11 convention is an RFC 2822 name-addr, not a bare address, so wrap
+  // the address in angle brackets. With a display name it becomes "Name <email>"
+  // (e.g. "Krzysztof Rutecki <krzysztof@encedo.com>"); without one, the minimal
+  // "<email>" form. External clients (GnuPG, Thunderbird, Proton) parse both. The UID
+  // is not hashed into the key fingerprint, so this does not change key IDs.
+  const uid = opts.displayName ? `${opts.displayName} <${email}>` : `<${email}>`;
   // expiryTimestamp is an absolute Unix timestamp; convert to seconds-from-creation for subpacket
   const expirySeconds = opts.expiryTimestamp ? (opts.expiryTimestamp - ts) : 0;
 

@@ -29,8 +29,8 @@ function fakeHem() {
   };
 }
 
-async function certFor(email) {
-  const { cert } = await buildCertificate(fakeHem(), 'S', 'S', 'E', email, { ecdhToken: 'E', timestamp: 1700000000 });
+async function certFor(email, opts = {}) {
+  const { cert } = await buildCertificate(fakeHem(), 'S', 'S', 'E', email, { ecdhToken: 'E', timestamp: 1700000000, ...opts });
   return cert;
 }
 
@@ -48,10 +48,18 @@ async function rejects(name, promise, expectFragment) {
   }
 }
 
-// 1. Valid key for the right address → accepted.
+// 1. Valid key for the right address → accepted, UID is the "<email>" name-addr form.
 {
   const key = await readValidatedWkdKey(await certFor('alice@example.com'), 'alice@example.com');
-  ok('valid key accepted', key && key.getUserIDs()[0] === 'alice@example.com');
+  ok('valid key accepted', !!key);
+  ok('nameless UID is <email>', key.getUserIDs()[0] === '<alice@example.com>');
+}
+
+// 1b. Display name → "Name <email>", still matched by address.
+{
+  const cert = await certFor('krzysztof@encedo.com', { displayName: 'Krzysztof Rutecki' });
+  const key = await readValidatedWkdKey(cert, 'krzysztof@encedo.com');
+  ok('display-name UID form', key.getUserIDs()[0] === 'Krzysztof Rutecki <krzysztof@encedo.com>');
 }
 
 // 2. Case-insensitive UID match (cert UID mixed case, WKD address lower-case).
