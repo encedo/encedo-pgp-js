@@ -91,7 +91,12 @@ All DESCR strings built by `DESCR.*()` helpers — change in `keychain.js` only.
 DESCR values are base64-encoded when passed to HEM API (`encodeDescr()`).
 
 ## Known limitations / pending work
-- `decryptAndVerifyHSM` for embedded sigs uses `sigPkt.signatureData` (openpgp.js v6 internal) — verify still works but may need adjustment on openpgp.js upgrade
+- `decryptAndVerifyHSM` was **removed** (2026-07-13): openpgp.js v6 discards the trailing
+  SignaturePacket after SEIPD decryption, so it always returned `valid:false`. To verify a
+  signed+encrypted message against a sender trusted via the HSM, verify the signature with
+  `decryptAndVerify` (openpgp native verify against the WKD cert) and separately confirm the
+  cert's keys exist in the HSM (`searchKeys` on the peer DESCR tags). Signature verification
+  only needs the public key, so it does not go through the HSM.
 - `hsmDecryptPkesk` returns `algoId` (number) not `algorithm` (string) — by design, caller resolves in webpack context
 
 ## HEM SDK methods used (hem-sdk.js)

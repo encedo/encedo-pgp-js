@@ -54,7 +54,8 @@ OID, fingerprint and "Anonymous Sender" disappear — completely different algor
 
 **`encryptAndSign()`**: add salt generation, update trailer, use Issuer Fingerprint subpacket (type 28)
 
-**`decryptAndVerifyHSM()`**: handle v6 signature format with salt when reconstructing the hash
+**`decryptAndVerifyHSM()`**: removed (2026-07-13) — see CLAUDE.md. Verify via `decryptAndVerify`
++ HSM key-presence check instead. No migration work needed.
 
 **Estimate: 2–3 days**
 

@@ -182,76 +182,25 @@ export async function decryptAndVerify(armoredMessage, hem, token, kid_ecdh, our
   throw new Error(`Could not decrypt: ${lastErr?.message ?? 'no matching PKESK for our key'}`);
 }
 
-/**
- * Decrypt a PGP message (HSM ECDH) and verify the embedded signature via HSM.
- * The sender's public key must have been previously imported via importKeyFromWKD()
- * (stored with DESCR.peerSign tag).
+/*
+ * NOTE: a former decryptAndVerifyHSM() was removed here.
  *
- * @param {string}     armoredMessage  ASCII-armored PGP message
- * @param {object}     hem             HEM instance
- * @param {string}     ecdhToken       JWT with keymgmt:use:<kid_ecdh> scope
- * @param {string}     kid_ecdh        X25519 key ID in HSM (recipient)
- * @param {Uint8Array} ourPubkey32     Our 32-byte X25519 public key
- * @param {Uint8Array} fingerprint     20-byte SHA-1 fingerprint of our ECDH subkey
- * @param {string}     verifyToken     JWT with keymgmt:use:<kid_sender_sign> scope
- * @param {string}     kid_sender_sign Ed25519 key ID in HSM (imported sender key)
- * @returns {Promise<{ data: string, valid: boolean }>}
+ * It tried to verify an embedded signature by asking the HSM (hem.exdsaVerify)
+ * against a sender key stored in the HSM. That never worked — openpgp.js v6
+ * discards the trailing SignaturePacket once the SEIPD is decrypted (it is not
+ * retained in message.packets nor in the packet-list stream), so the code always
+ * fell through to valid:false. Recovering the signature would require decrypting
+ * the SEIPD ourselves (AES-CFB + MDC) and walking the packets by hand.
+ *
+ * The "trust the sender because their key is in the HSM" goal is better split in
+ * two, at the integration layer:
+ *   1. verify the signature cryptographically with decryptAndVerify() (openpgp
+ *      native verify against the sender's WKD certificate), and
+ *   2. confirm that certificate's keys are present in the HSM trust store
+ *      (searchKeys on the DESCR.peerSign/peerEcdh tags for that email).
+ * A signature check only needs the public key, so there is no reason to route it
+ * through the HSM.
  */
-export async function decryptAndVerifyHSM(armoredMessage, hem, ecdhToken, kid_ecdh, ourPubkey32, fingerprint, verifyToken, kid_sender_sign) {
-  const message = await openpgp.readMessage({ armoredMessage });
-
-  const pkeskPackets = message.packets.filterByTag(openpgp.enums.packet.publicKeyEncryptedSessionKey);
-  if (pkeskPackets.length === 0) throw new Error('No PKESK packet found in message');
-
-  let plaintext = null;
-  let lastErr = null;
-  for (const pkesk of pkeskPackets) {
-    try {
-      const sessionKey = await decryptPkesk(pkesk, hem, ecdhToken, kid_ecdh, ourPubkey32, fingerprint);
-      const { data } = await openpgp.decrypt({ message, sessionKeys: [sessionKey] });
-      plaintext = data;
-      break;
-    } catch (e) {
-      lastErr = e;
-      continue;
-    }
-  }
-  if (plaintext === null) throw new Error(`Could not decrypt: ${lastErr?.message ?? 'no matching PKESK for our key'}`);
-
-  // Extract signature bytes from the message and verify via HSM
-  const sigPackets = message.packets.filterByTag(openpgp.enums.packet.signature);
-  if (!sigPackets.length) return { data: plaintext, valid: false };
-
-  // Reconstruct the signed data: LiteralData packet content + sig packet hash prefix + trailer
-  // openpgp.js v6: get the literal data packet
-  const litPackets = message.packets.filterByTag(openpgp.enums.packet.literalData);
-  if (!litPackets.length) return { data: plaintext, valid: false };
-
-  const litData  = litPackets[0];
-  const sigPkt   = sigPackets[0];
-
-  // Build the data that was hashed for this signature (RFC 4880 §5.2.4)
-  // For literal data signatures: hash over the literal body + sig hash prefix + trailer
-  const litBody      = litData.data instanceof Uint8Array ? litData.data
-                     : new TextEncoder().encode(litData.data);
-  const hashedLen    = sigPkt.rawNotations?.length ?? 0; // fallback
-  // Use openpgp.js internal: sigPkt.signatureData has the hash prefix bytes
-  const sigData      = sigPkt.signatureData; // Uint8Array: version+type+algo+hash+hashedSubpkts
-  const trailerLen   = sigData.length;
-  const trailer      = new Uint8Array([0x04, 0xFF,
-    (trailerLen>>>24)&0xFF, (trailerLen>>>16)&0xFF, (trailerLen>>>8)&0xFF, trailerLen&0xFF]);
-  const hash         = await sha256(concat(litBody, sigData, trailer));
-
-  // Reconstruct 64-byte sig from R+S MPIs
-  const { sig64 } = parseSigPacketForVerify(sigPkt.write());
-
-  try {
-    await hem.exdsaVerify(verifyToken, kid_sender_sign, hash, sig64, 'Ed25519');
-    return { data: plaintext, valid: true };
-  } catch {
-    return { data: plaintext, valid: false };
-  }
-}
 
 /**
  * Decrypt a single PKESK (Public-Key Encrypted Session Key) packet.

@@ -16,7 +16,6 @@ export {
   hsmDecryptPkesk,
   decryptMessage,
   decryptAndVerify,
-  decryptAndVerifyHSM,
   verifySignedMessage,
   verifySignedMessageHSM,
   importKeyFromWKD,
