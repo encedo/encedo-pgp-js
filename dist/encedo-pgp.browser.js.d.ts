@@ -8,7 +8,7 @@ export function buildCertificate(
   kidSign: string,
   kidEcdh: string,
   email: string,
-  opts?: { ecdhToken?: string; timestamp?: number; expiryTimestamp?: number }
+  opts?: { ecdhToken?: string; timestamp?: number; expiryTimestamp?: number; displayName?: string }
 ): Promise<{ cert: Uint8Array }>;
 
 export function publishKey(wkdBase: string, email: string, cert: Uint8Array, authToken?: string): Promise<void>;
