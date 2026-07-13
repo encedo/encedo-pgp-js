@@ -28,6 +28,12 @@ export default [
       format: 'es',
       sourcemap: true,
     },
+    // openpgp is NOT bundled — it is imported so the host provides a single
+    // instance (webpack in carbonio-pgp-ui, an import map in pgp-test.html).
+    // Embedding it caused two openpgp copies in the plugin, and webpack
+    // re-processing the embedded copy corrupted its internals (ZBASE32 /
+    // PacketList.fromBinary). As an external import there is one shared instance.
+    external: ['openpgp'],
     plugins: [
       runtimeSubstitute('browser-crypto.js'),
       resolve({ browser: true, preferBuiltins: false }),
@@ -46,6 +52,6 @@ export default [
       runtimeSubstitute('node-crypto.js'),
       resolve({ preferBuiltins: true }),
     ],
-    external: ['node:crypto', 'node:https', 'node:http', 'node:url'],
+    external: ['openpgp', 'node:crypto', 'node:https', 'node:http', 'node:url'],
   },
 ];

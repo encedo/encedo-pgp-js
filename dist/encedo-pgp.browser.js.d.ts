@@ -38,3 +38,20 @@ export function encryptAndSign(
   recipients: Array<string>,
   plaintext: string
 ): Promise<string>;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function buildHsmSignaturePkt(hem: any, signToken: string, kidSign: string, keyId8: Uint8Array, plaintext: string): Promise<{ sigPkt: Uint8Array; dataBytes: Uint8Array }>;
+
+/**
+ * Parse and validate a WKD public key for `email`: primary-key self-consistency
+ * (verifyPrimaryKey), a UID matching the address with a valid self-certification,
+ * and — when requireEncryptionKey — a usable encryption subkey. Throws otherwise.
+ * Returns the parsed openpgp key. Uses the host-provided (external) openpgp, so the
+ * returned key is compatible with the caller's own openpgp instance.
+ */
+export function readValidatedWkdKey(
+  keyBytes: Uint8Array,
+  email: string,
+  opts?: { requireEncryptionKey?: boolean }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any>;

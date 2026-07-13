@@ -725,6 +725,7 @@
             </div>
             <div class="output" id="wkdLookupOutput">--</div>
             <div class="output-actions">
+                <button class="btn btn-ghost" id="btnWkdValidate">Validate key ↔ address</button>
                 <button class="btn btn-ghost" id="btnWkdImport">Import to HSM Keychain</button>
             </div>
 
@@ -1274,6 +1275,47 @@
             setOutput('wkdLookupOutput',
                 `Znaleziono: ${keyBytes.length} bajtów\nhash: ${hash}`,
                 'success');
+        } catch (e) {
+            setOutput('wkdLookupOutput', e.message, 'error');
+        }
+    });
+
+    document.getElementById('btnWkdValidate').addEventListener('click', async () => {
+        const email = document.getElementById('wkdLookupEmail').value.trim();
+        if (!email) { setOutput('wkdLookupOutput', 'Podaj adres email.', 'error'); return; }
+
+        setOutput('wkdLookupOutput', 'Waliduję...', null);
+        try {
+            const { lookupKey } = await import('./src/wkd-client.js');
+            const { readValidatedWkdKey } = await import('./src/openpgp-bridge.js');
+            const keyBytes = await lookupKey(email);
+            if (!keyBytes) { setOutput('wkdLookupOutput', 'Klucz nie znaleziony (404).', 'error'); return; }
+
+            const lines = [];
+
+            // 1. Validate for the real address — should pass.
+            try {
+                const key = await readValidatedWkdKey(keyBytes, email);
+                lines.push(`✓ VALID for ${email}`);
+                lines.push(`  UID: ${key.getUserIDs().join(', ')}`);
+                lines.push(`  fingerprint: ${key.getFingerprint()}`);
+            } catch (e) {
+                lines.push(`✗ REJECTED for ${email}: ${e.message}`);
+            }
+
+            // 2. Validate the same key bytes against a decoy address — must be rejected,
+            //    proving the UID↔address binding (a swapped WKD key is caught here).
+            const decoy = 'attacker@evil.example';
+            try {
+                await readValidatedWkdKey(keyBytes, decoy);
+                lines.push(`\n⚠ UNEXPECTED: key also accepted for ${decoy} (should be rejected!)`);
+            } catch (e) {
+                lines.push(`\n✓ correctly REJECTED for ${decoy}`);
+                lines.push(`  reason: ${e.message}`);
+            }
+
+            const ok = lines[0].startsWith('✓') && lines.some(l => l.includes('correctly REJECTED'));
+            setOutput('wkdLookupOutput', lines.join('\n'), ok ? 'success' : 'error');
         } catch (e) {
             setOutput('wkdLookupOutput', e.message, 'error');
         }
