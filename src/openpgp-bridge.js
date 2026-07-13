@@ -123,12 +123,16 @@ export async function encryptMessageHSM(hem, signToken, ecdhToken, kid_sign, kid
  * @param {string}   plaintext     Message body
  * @param {string[]} toEmails      Recipient email addresses
  * @param {object}   [opts]
- * @param {object}   [opts.signingHem]    HEM instance (for signing)
- * @param {string}   [opts.signingToken]  JWT token
- * @param {string}   [opts.signingKid]    Ed25519 key ID for signing
- * @returns {Promise<string>}  ASCII-armored encrypted (+ optionally signed) message
+ * @returns {Promise<string>}  ASCII-armored encrypted (unsigned) message
  */
 export async function encryptMessage(plaintext, toEmails, opts = {}) {
+  // Signing is intentionally not supported here — it would silently send unsigned.
+  // Callers that need a signature must use encryptAndSign(), which produces a
+  // proper inline-signed encrypted message.
+  if (opts.signingHem || opts.signingToken || opts.signingKid) {
+    throw new Error('encryptMessage does not sign — use encryptAndSign for a signed+encrypted message');
+  }
+
   // Fetch all recipient public keys from WKD, validating each before use
   const encryptionKeys = [];
   for (const email of toEmails) {
@@ -138,13 +142,7 @@ export async function encryptMessage(plaintext, toEmails, opts = {}) {
   }
 
   const message = await openpgp.createMessage({ text: plaintext });
-  const armoredMessage = await openpgp.encrypt({ message, encryptionKeys });
-
-  if (opts.signingHem) {
-    console.warn('openpgp-bridge: signing during encrypt not yet implemented — sending unsigned');
-  }
-
-  return armoredMessage;
+  return openpgp.encrypt({ message, encryptionKeys });
 }
 
 // ---------------------------------------------------------------------------
@@ -188,7 +186,7 @@ export async function decryptMessage(armoredMessage, hem, token, kid_ecdh, ourPu
       });
       return data;
     } catch (e) {
-      console.error('decryptMessage PKESK failed:', e);
+      // Expected while probing PKESKs for a multi-recipient message; surfaced via lastErr.
       lastErr = e;
       continue;
     }
@@ -238,7 +236,7 @@ export async function decryptAndVerify(armoredMessage, hem, token, kid_ecdh, our
         return { data: result.data, valid: false, keyID: sig.keyID?.toHex().toUpperCase() ?? null };
       }
     } catch (e) {
-      console.error('decryptAndVerify PKESK failed:', e);
+      // Expected while probing PKESKs for a multi-recipient message; surfaced via lastErr.
       lastErr = e;
       continue;
     }
@@ -393,13 +391,22 @@ async function aesKeyUnwrap(kwk, wrappedKey, _symAlgoId) {
 }
 
 /**
- * Strip PKCS#5 padding from AES Key Wrap result (RFC 4880 §13.5).
- * Returns the raw session key bytes (without leading sym_algo byte and trailing checksum).
+ * Unwrap the ECDH-encoded session key (RFC 6637 §8 / RFC 4880 §13.5).
+ * Layout: sym_algo(1) || session_key(n) || checksum(2) || PKCS#5 padding.
+ * Returns the raw session key bytes, after verifying the 2-octet checksum.
  */
 function stripPkcs5(padded) {
   const padLen = padded[padded.length - 1];
   if (padLen < 1 || padLen > 8) throw new Error('Invalid PKCS#5 padding');
-  return padded.slice(1, padded.length - padLen - 2); // strip sym_algo + checksum + padding
+  const keyEnd = padded.length - padLen - 2; // exclusive end of session key / start of checksum
+  if (keyEnd < 1) throw new Error('Invalid ECDH session-key wrapper (too short)');
+  const sessionKey = padded.slice(1, keyEnd);
+  // Checksum is the mod-65536 sum of the session-key octets (RFC 4880 §5.1).
+  const expected = (padded[keyEnd] << 8) | padded[keyEnd + 1];
+  let sum = 0;
+  for (const b of sessionKey) sum = (sum + b) & 0xFFFF;
+  if (sum !== expected) throw new Error('ECDH session-key checksum mismatch');
+  return sessionKey;
 }
 
 // ---------------------------------------------------------------------------
