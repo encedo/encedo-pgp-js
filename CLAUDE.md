@@ -23,8 +23,8 @@ src/
     node-crypto.js  ← sha1, sha256, aes256KeyUnwrap via node:crypto
     browser-crypto.js ← sha1, sha256, aes256KeyUnwrap via crypto.subtle (AES-KW)
 dist/
-  encedo-pgp.browser.js  ← rollup bundle for browser (413KB, includes openpgp)
-  encedo-pgp.node.js     ← rollup bundle for Node.js (1.2MB, includes openpgp)
+  encedo-pgp.browser.js  ← rollup bundle for browser (~64KB; openpgp is EXTERNAL, host-provided)
+  encedo-pgp.node.js     ← rollup bundle for Node.js (openpgp external too)
 test/
   util.js              ← parseArgs, prompt helpers
   test-keygen.js       ← Generate key pair in HSM + build+export cert
@@ -59,8 +59,11 @@ npm run build   # produces dist/encedo-pgp.browser.js + dist/encedo-pgp.node.js
 - **AES-KW unwrap**: Node uses `node:crypto` (id-aes256-wrap); Browser uses native `crypto.subtle.unwrapKey` with `AES-KW` + HMAC target (accepts arbitrary unwrapped key lengths)
 - **WKD lookup**: advanced method first (`openpgpkey.<domain>`), 5s timeout, fallback to direct
 - **No absolute paths** in any src file
-- **buildHsmSignaturePkt**: pure byte manipulation + HSM `exdsaSignBytes`. Zero openpgp.js API calls — safe to call from within webpack-processed rollup bundle.
-- **hsmDecryptPkesk**: pure bytes + HSM `ecdh`. Returns `{ data, algoId }` (NOT `algorithm` string) — caller must resolve enum in webpack openpgp context to avoid corrupted enum lookup.
+- **openpgp is a rollup `external`** (not embedded) → one shared instance in every host
+  (webpack in carbonio-pgp-ui, import map in pgp-test.html). Do NOT re-embed it; that brought
+  back the webpack double-processing corruption. High-level functions run on the host openpgp.
+- **buildHsmSignaturePkt**: pure byte manipulation + HSM `exdsaSignBytes`. Zero openpgp.js API calls.
+- **hsmDecryptPkesk**: pure bytes + HSM `ecdh`. Returns `{ data, algoId }` (NOT `algorithm` string) — caller resolves the enum in its openpgp context.
 
 ## Public API (src/openpgp-bridge.js + src/cert-builder.js)
 
