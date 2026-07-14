@@ -1184,7 +1184,10 @@
     // ── Decrypt ───────────────────────────────────────────────────────────────
     document.getElementById('btnDecrypt').addEventListener('click', async () => {
         if (!hem || !hsmPassword) { setOutput('decryptOutput', 'Najpierw połącz z HSM.', 'error'); return; }
-        const armoredMsg  = document.getElementById('decryptMessage').value.trim();
+        const rawInput    = document.getElementById('decryptMessage').value.trim();
+        // Accept a full .eml / MIME paste — pull out the PGP MESSAGE block.
+        const pgpBlock    = rawInput.match(/-----BEGIN PGP MESSAGE-----[\s\S]*?-----END PGP MESSAGE-----/);
+        const armoredMsg  = pgpBlock ? pgpBlock[0] : rawInput;
         const emailOrKid  = document.getElementById('decryptKey').value.trim();
         const senderEmail = document.getElementById('decryptSenderEmail').value.trim();
         if (!armoredMsg) { setOutput('decryptOutput', 'Wklej zaszyfrowaną wiadomość.', 'error'); return; }
@@ -1241,10 +1244,22 @@
                     sigEl.style.border = '1px solid rgba(34,197,94,0.3)';
                     sigEl.textContent = `✓ Podpis prawidłowy — keyID: ${result.keyID}`;
                 } else {
+                    // Diagnostyka: czy keyID podpisu jest w kluczu WKD nadawcy?
+                    const primaryId = senderKey.getKeyID().toHex().toUpperCase();
+                    const subIds    = senderKey.getSubkeys().map(s => s.getKeyID().toHex().toUpperCase());
+                    const known     = [primaryId, ...subIds];
+                    const sigId     = result.keyID ? result.keyID.toUpperCase() : null;
+                    const verdict   = !sigId ? 'brak pakietu podpisu'
+                                    : !known.includes(sigId) ? 'podpis kluczem SPOZA WKD nadawcy (rotacja klucza Protona?)'
+                                    : 'klucz się zgadza, ale hash/dane nie weryfikują się';
                     sigEl.style.background = 'rgba(239,68,68,0.12)';
                     sigEl.style.color = '#ef4444';
                     sigEl.style.border = '1px solid rgba(239,68,68,0.3)';
-                    sigEl.textContent = `✗ Podpis nieprawidłowy lub brak podpisu${result.keyID ? ' — keyID: ' + result.keyID : ''}`;
+                    sigEl.style.whiteSpace = 'pre-line';
+                    sigEl.textContent =
+                        `✗ ${verdict}\n` +
+                        `   sig keyID:   ${sigId ?? '—'}\n` +
+                        `   WKD nadawcy: primary ${primaryId}${subIds.length ? '  subkeys ' + subIds.join(', ') : ''}`;
                 }
             } else {
                 // ── Decrypt only ─────────────────────────────────────────────
